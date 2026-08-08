@@ -1,5 +1,5 @@
 use crate::{
-    collectors::mci::{mci_page_url, RawMCIPackage},
+    collectors::mci::{mci_page_url, MCIAttribute, RawMCIPackage},
     domain::{
         allowance::{DataAllowance, DataAllowanceKind, SmsAllowance, VoiceAllowance},
         operator::Operator,
@@ -35,13 +35,9 @@ impl MCINormalizer {
         raw: &RawMCIPackage,
         fetched_at: i64,
     ) -> Result<InternetPackage, MCINormalizationError> {
-        let external_id = clean_text(
-            raw.id
-                .as_deref()
-                .or(raw.ussd_code.as_deref())
-                .ok_or(MCINormalizationError::MissingId)?,
-        )
-        .ok_or(MCINormalizationError::MissingId)?;
+        let external_id =
+            clean_text(Some(raw.id.as_str()).ok_or(MCINormalizationError::MissingId)?)
+                .ok_or(MCINormalizationError::MissingId)?;
         let name = clean_text(
             raw.title
                 .as_deref()
@@ -50,13 +46,16 @@ impl MCINormalizer {
         .ok_or(MCINormalizationError::EmptyName)?;
         let price = raw.price.as_ref().map(parse_price).transpose()?;
         let mut data_allowances = Vec::new();
-        if let Some(v) = &raw.volume {
+        if let Some(v) = &raw.traffic_mb {
             data_allowances.extend(parse_allowance_text(
                 &value_to_text(v).ok_or(MCINormalizationError::InvalidVolume)?,
             )?)
         }
-        for v in raw.extra_benefits.iter().chain(raw.restrictions.iter()) {
-            if let Some(t) = value_to_text(v) {
+        for attribute in &raw.attributes {
+            if matches!(attribute.title.as_deref(), Some("حجم" | "title")) {
+                continue;
+            }
+            for t in attribute_text_values(attribute) {
                 if mentions_data(&t) {
                     data_allowances.extend(parse_allowance_text(&t)?);
                 }
@@ -66,10 +65,10 @@ impl MCINormalizer {
             data_allowances.push(DataAllowance::unknown(DataAllowanceKind::Other));
         }
         let has_non_data = raw
-            .extra_benefits
+            .attributes
             .iter()
-            .filter_map(value_to_text)
-            .any(|t| mentions_voice(&t) || mentions_sms(&t) || !mentions_data(&t));
+            .flat_map(attribute_text_values)
+            .any(|t| mentions_voice(&t) || mentions_sms(&t));
         let voice = parse_voice(raw);
         let sms = parse_sms(raw);
         let package = InternetPackage {
@@ -86,25 +85,22 @@ impl MCINormalizer {
             data_allowances,
             voice: voice.clone(),
             sms: sms.clone(),
-            sim_types: parse_sim_types(raw.category.as_deref()),
+            sim_types: parse_sim_types(raw.package_type.as_deref()),
             package_kind: if has_non_data || voice.is_some() || sms.is_some() {
                 PackageKind::Combined
             } else {
                 PackageKind::InternetOnly
             },
-            availability: parse_availability(raw.availability.as_ref()),
+            availability: Availability::Unknown,
             purchase: PurchaseInfo {
-                official_url: raw
-                    .purchase_url
-                    .clone()
-                    .or_else(|| Some(mci_page_url().into())),
-                ussd_code: raw.ussd_code.clone(),
+                official_url: Some(mci_page_url().into()),
+                ussd_code: None,
             },
             metadata: PackageMetadata {
                 fetched_at_unix_seconds: Some(fetched_at),
                 source_url: Some(mci_page_url().into()),
                 regulatory_code: None,
-                offer_code: raw.id.clone(),
+                offer_code: Some(raw.id.clone()),
                 original_description: Some(name),
             },
         };
@@ -136,6 +132,8 @@ fn parse_allowance_part(text: &str) -> Result<DataAllowance, MCINormalizationErr
     let unit = if t.contains("گیگ") || t.contains("gb") {
         DataUnit::Gib
     } else if t.contains("مگ") || t.contains("mb") {
+        DataUnit::Mib
+    } else if t.chars().all(|c| c.is_ascii_digit()) {
         DataUnit::Mib
     } else {
         return Ok(unknown_with_description(kind, text));
@@ -220,9 +218,9 @@ fn classify_allowance(text: &str) -> DataAllowanceKind {
     }
 }
 fn parse_voice(raw: &RawMCIPackage) -> Option<VoiceAllowance> {
-    raw.extra_benefits
+    raw.attributes
         .iter()
-        .filter_map(value_to_text)
+        .flat_map(attribute_text_values)
         .find(|t| mentions_voice(t))
         .map(|t| VoiceAllowance {
             minutes: first_number(&normalize_digits(&t)).and_then(|n| n.parse().ok()),
@@ -230,9 +228,9 @@ fn parse_voice(raw: &RawMCIPackage) -> Option<VoiceAllowance> {
         })
 }
 fn parse_sms(raw: &RawMCIPackage) -> Option<SmsAllowance> {
-    raw.extra_benefits
+    raw.attributes
         .iter()
-        .filter_map(value_to_text)
+        .flat_map(attribute_text_values)
         .find(|t| mentions_sms(t))
         .map(|t| SmsAllowance {
             count: first_number(&normalize_digits(&t)).and_then(|n| n.parse().ok()),
@@ -255,6 +253,14 @@ fn mentions_data(t: &str) -> bool {
         || l.contains("مگ")
         || l.contains("نامحدود")
 }
+fn attribute_text_values(attribute: &MCIAttribute) -> impl Iterator<Item = String> + '_ {
+    attribute.attribute_value_vms.iter().filter_map(|v| {
+        v.display_text
+            .clone()
+            .or_else(|| v.value.as_ref().and_then(value_to_text))
+    })
+}
+
 fn value_to_text(v: &Value) -> Option<String> {
     match v {
         Value::String(s) => clean_text(s),
@@ -281,25 +287,21 @@ fn unknown_with_description(kind: DataAllowanceKind, text: &str) -> DataAllowanc
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::collectors::mci::parse_page;
+    use crate::collectors::mci::parse_catalog;
     #[test]
-    fn normalizes_monthly_daily_combined_and_restricted() {
-        let c = parse_page(
-            include_bytes!("../../tests/fixtures/mci/page1.json"),
+    fn normalizes_shop_api_products_and_raw_mb_traffic() {
+        let c = parse_catalog(
+            include_bytes!("../../tests/fixtures/mci/products.json"),
             "fixture",
         )
         .unwrap();
         let p = MCINormalizer::normalize(&c.packages[0], 10).unwrap();
         assert_eq!(p.operator, Operator::Mci);
-        assert_eq!(p.validity, Validity::Days(1));
+        assert_eq!(p.validity, Validity::Days(120));
         assert!(p
             .data_allowances
             .iter()
             .any(|a| a.kind == DataAllowanceKind::General));
-        assert!(p
-            .data_allowances
-            .iter()
-            .any(|a| a.kind == DataAllowanceKind::Night));
         let p2 = MCINormalizer::normalize(&c.packages[1], 10).unwrap();
         assert_eq!(p2.validity, Validity::Days(30));
         assert_eq!(p2.package_kind, PackageKind::Combined);
