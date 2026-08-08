@@ -3,6 +3,7 @@ pub mod collectors;
 pub mod commands;
 pub mod domain;
 pub mod error;
+pub mod filtering;
 pub mod normalizers;
 pub mod recommendations;
 pub mod refresh;
