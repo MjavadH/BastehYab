@@ -1,5 +1,7 @@
 //! Operator-independent normalization helpers and validation for canonical packages.
 
+pub mod irancell;
+
 use thiserror::Error;
 
 use crate::domain::{
