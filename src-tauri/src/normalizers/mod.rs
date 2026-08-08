@@ -3,6 +3,7 @@
 pub mod irancell;
 pub mod mci;
 pub mod rightel;
+pub mod samantel;
 
 use thiserror::Error;
 
