@@ -1,0 +1,15 @@
+{
+  "app.title": "بسته‌یاب",
+  "app.subtitle": "کشف محلی بسته‌های اینترنت اپراتورهای موبایل ایران.",
+  "nav.browse": "بسته‌ها",
+  "nav.filters": "فیلترها",
+  "nav.recommendations": "پیشنهادها",
+  "nav.status": "وضعیت اپراتورها",
+  "nav.settings": "تنظیمات",
+  "status.foundation": "زیرساخت اولیه آماده است",
+  "status.ipcIdle": "در حال بررسی هسته دسکتاپ…",
+  "status.ipcReady": "هسته دسکتاپ متصل است",
+  "status.ipcUnavailable": "هسته دسکتاپ در پیش‌نمایش مرورگر در دسترس نیست",
+  "error.boundaryTitle": "مشکلی پیش آمد",
+  "error.boundaryBody": "برنامه را دوباره باز کنید و تلاش کنید."
+}
