@@ -1,0 +1,18 @@
+{
+  "data": {
+    "products": [
+      {
+        "id": "pkg-1",
+        "title": "بسته ۱۰ گیگابایت",
+        "price": 120000,
+        "volume": "10 GB",
+        "validity": "30 روز",
+        "category": "prepaid",
+        "extraBenefits": ["100 دقیقه"],
+        "restrictions": ["مصرف منصفانه"],
+        "mystery": "kept"
+      }
+    ]
+  },
+  "total": 1
+}
