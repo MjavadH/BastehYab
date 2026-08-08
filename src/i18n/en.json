@@ -1,0 +1,15 @@
+{
+  "app.title": "BastehYab",
+  "app.subtitle": "Local-first internet package discovery for Iranian mobile operators.",
+  "nav.browse": "Packages",
+  "nav.filters": "Filters",
+  "nav.recommendations": "Recommendations",
+  "nav.status": "Operator status",
+  "nav.settings": "Settings",
+  "status.foundation": "Foundation ready",
+  "status.ipcIdle": "Checking desktop core…",
+  "status.ipcReady": "Desktop core connected",
+  "status.ipcUnavailable": "Desktop core unavailable in browser preview",
+  "error.boundaryTitle": "Something went wrong",
+  "error.boundaryBody": "Restart the app and try again."
+}
