@@ -1,6 +1,7 @@
 //! Operator collectors retrieve official upstream data into operator-specific raw models.
 
 pub mod irancell;
+pub mod mci;
 pub mod rightel;
 
 use crate::{
@@ -11,6 +12,7 @@ use crate::{
 #[derive(Debug, Clone, Default)]
 pub struct OperatorCollectors {
     irancell: irancell::IrancellCollector,
+    mci: mci::MCICollector,
     rightel: rightel::RightelCollector,
 }
 
@@ -24,8 +26,9 @@ impl Collector for OperatorCollectors {
     fn collect(&self, operator: Operator) -> Result<CollectedPackages, CollectorError> {
         match operator {
             Operator::Irancell => self.irancell.collect(operator),
+            Operator::Mci => self.mci.collect(operator),
             Operator::Rightel => self.rightel.collect(operator),
-            Operator::Mci | Operator::Samantel => Err(CollectorError::Failed(format!(
+            Operator::Samantel => Err(CollectorError::Failed(format!(
                 "collector for {:?} is not implemented",
                 operator
             ))),
