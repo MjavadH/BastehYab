@@ -1,3 +1,3 @@
-//! Refresh boundary for future milestone implementations.
+//! Refresh orchestration for per-operator package collection and cache publication.
 
 pub mod orchestrator;
