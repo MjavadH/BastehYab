@@ -197,7 +197,7 @@ fn spec_text(spec: &IrancellSpecificationContent) -> Option<String> {
         .or_else(|| localized_text(spec.desc.as_ref()))
 }
 fn localized_text(text: Option<&LocalizedText>) -> Option<String> {
-    text.and_then(|t| clean_text(t.en.as_deref()).or_else(|| clean_text(t.fa.as_deref())))
+    text.and_then(|t| clean_text(t.en.as_deref().expect("REASON")).or_else(|| clean_text(t.fa.as_deref().expect("REASON"))))
 }
 fn value_to_text(value: &Value) -> Option<String> {
     match value {

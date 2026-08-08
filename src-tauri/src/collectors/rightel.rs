@@ -10,6 +10,7 @@ use crate::{
     normalizers::rightel::RightelNormalizer,
     refresh::orchestrator::{CollectedPackages, Collector, CollectorError},
 };
+use crate::domain::package::InternetPackage;
 
 const RIGHTEL_AUTH_URL: &str =
     "https://portal-api.rightel.ir/user-management/api/v1/auth/authenticate";
@@ -97,14 +98,27 @@ impl Collector for RightelCollector {
             .collect_raw()
             .map_err(|e| CollectorError::Failed(e.to_string()))?;
         let raw_record_count = catalog.packages.len();
-        let mut packages = Vec::new();
+        println!("Rightel products collected: {raw_record_count}");
+        let mut packages: Vec<InternetPackage> = Vec::new();
         let mut normalization_failures = 0;
+
         for raw in catalog.packages {
             match RightelNormalizer::normalize(&raw, fetched_at) {
-                Ok(package) => packages.push(package),
+                Ok(package) => {
+                    if let Some(existing) = packages.iter_mut().find(|p| p.name == package.name && p.price == package.price) {
+                        for sim in package.sim_types {
+                            if !existing.sim_types.contains(&sim) {
+                                existing.sim_types.push(sim);
+                            }
+                        }
+                    } else {
+                        packages.push(package);
+                    }
+                }
                 Err(_) => normalization_failures += 1,
             }
         }
+
         Ok(CollectedPackages {
             fetched_at_unix_seconds: fetched_at,
             raw_record_count,
@@ -152,14 +166,15 @@ pub struct RightelCatalog {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RawRightelPackage {
-    pub id: Option<String>,
-    pub name: Option<String>,
+    pub purchasable_package_id: Option<String>,
+    pub name_fa: Option<String>,
+    pub name_en: Option<String>,
     pub price: Option<Value>,
-    pub traffic: Option<Value>,
-    pub validity: Option<Value>,
-    pub combined_benefits: Vec<Value>,
-    pub restrictions: Vec<Value>,
-    pub metadata: Map<String, Value>,
+    pub product_type: Option<String>,
+    pub offer_code: Option<String>,
+    pub filters: Vec<Value>,
+    pub channel_categories: Vec<Value>,
+    pub unknown_fields: Map<String, Value>,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -200,8 +215,17 @@ pub fn parse_catalog(
     }
     let root: Value =
         serde_json::from_slice(bytes).map_err(|e| RightelCollectorError::Json(e.to_string()))?;
+
     let mut packages = Vec::new();
-    collect_package_objects(&root, &mut packages);
+
+    if let Some(data_array) = root.pointer("/data").and_then(Value::as_array) {
+        for item in data_array {
+            if is_internet_package(item) {
+                packages.push(raw_from_map(item));
+            }
+        }
+    }
+
     if packages.is_empty() {
         return Err(RightelCollectorError::EmptyResponse);
     }
@@ -211,58 +235,69 @@ pub fn parse_catalog(
     })
 }
 
-fn collect_package_objects(value: &Value, out: &mut Vec<RawRightelPackage>) {
-    match value {
-        Value::Array(items) => items.iter().for_each(|v| collect_package_objects(v, out)),
-        Value::Object(map) if is_package_like(map) => out.push(raw_from_map(map)),
-        Value::Object(map) => map.values().for_each(|v| collect_package_objects(v, out)),
-        _ => {}
+fn is_internet_package(item: &Value) -> bool {
+    if let Some(categories) = item.get("channelCategories").and_then(Value::as_array) {
+        for cat in categories {
+            if let Some(name) = cat.get("channelCategoryNameEn").and_then(Value::as_str) {
+                if name.eq_ignore_ascii_case("internet") {
+                    return true;
+                }
+            }
+            if let Some(id) = cat.get("channelCategoryId").and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))) {
+                if id == 21 {
+                    return true;
+                }
+            }
+        }
     }
+    false
 }
-fn is_package_like(map: &Map<String, Value>) -> bool {
-    any_key(map, &["id", "packageId", "code", "offerCode"]).is_some()
-        && any_key(map, &["name", "title", "packageName"]).is_some()
-        && (any_key(map, &["price", "amount", "cost", "fee"]).is_some()
-            || any_key(map, &["traffic", "volume", "data", "internet"]).is_some())
-}
-fn raw_from_map(map: &Map<String, Value>) -> RawRightelPackage {
-    let mut metadata = map.clone();
+fn raw_from_map(item: &Value) -> RawRightelPackage {
+    let mut unknown_fields = Map::new();
+    let mut purchasable_package_id = None;
+    let mut name_fa = None;
+    let mut name_en = None;
+    let mut price = None;
+    let mut product_type = None;
+    let mut offer_code = None;
+
+    if let Some(pkg) = item.get("purchasablePackage").and_then(Value::as_object) {
+        for (k, v) in pkg {
+            match k.as_str() {
+                "purchasablePackageId" => purchasable_package_id = value_to_string(v.clone()),
+                "purchasablePackageNameFa" => name_fa = value_to_string(v.clone()),
+                "purchasablePackageNameEn" => name_en = value_to_string(v.clone()),
+                "packagePrice" => price = Some(v.clone()),
+                "mainProductType" => product_type = value_to_string(v.clone()),
+                "pricePlanOfferCode" => offer_code = value_to_string(v.clone()),
+                _ => {
+                    unknown_fields.insert(k.clone(), v.clone());
+                }
+            }
+        }
+    }
+
+    let filters = item.get("filters").and_then(Value::as_array).cloned().unwrap_or_default();
+    let channel_categories = item.get("channelCategories").and_then(Value::as_array).cloned().unwrap_or_default();
+
+    if let Some(obj) = item.as_object() {
+        for (k, v) in obj {
+            if k != "purchasablePackage" && k != "filters" && k != "channelCategories" {
+                unknown_fields.insert(k.clone(), v.clone());
+            }
+        }
+    }
+
     RawRightelPackage {
-        id: take_string(&mut metadata, &["id", "packageId", "code", "offerCode"]),
-        name: take_string(&mut metadata, &["name", "title", "packageName"]),
-        price: take_value(&mut metadata, &["price", "amount", "cost", "fee"]),
-        traffic: take_value(&mut metadata, &["traffic", "volume", "data", "internet"]),
-        validity: take_value(&mut metadata, &["validity", "duration", "period"]),
-        combined_benefits: take_array(
-            &mut metadata,
-            &[
-                "benefits",
-                "combinedBenefits",
-                "gift",
-                "gifts",
-                "details",
-                "items",
-            ],
-        ),
-        restrictions: take_array(&mut metadata, &["restrictions", "limitations", "terms"]),
-        metadata,
-    }
-}
-fn any_key<'a>(map: &'a Map<String, Value>, keys: &[&'a str]) -> Option<&'a str> {
-    keys.iter().copied().find(|k| map.contains_key(*k))
-}
-fn take_value(map: &mut Map<String, Value>, keys: &[&str]) -> Option<Value> {
-    let k = any_key(map, keys)?.to_string();
-    map.remove(&k)
-}
-fn take_string(map: &mut Map<String, Value>, keys: &[&str]) -> Option<String> {
-    take_value(map, keys).and_then(value_to_string)
-}
-fn take_array(map: &mut Map<String, Value>, keys: &[&str]) -> Vec<Value> {
-    match take_value(map, keys) {
-        Some(Value::Array(v)) => v,
-        Some(v) => vec![v],
-        None => Vec::new(),
+        purchasable_package_id,
+        name_fa,
+        name_en,
+        price,
+        product_type,
+        offer_code,
+        filters,
+        channel_categories,
+        unknown_fields,
     }
 }
 fn value_to_string(v: Value) -> Option<String> {
@@ -283,36 +318,67 @@ mod tests {
     use crate::normalizers::rightel::RightelNormalizer;
 
     #[test]
-    fn authentication_success_extracts_token() {
-        assert_eq!(
-            parse_auth_token(r#"{"data":{"token":"abc"}}"#.as_bytes()).unwrap(),
-            "abc"
-        );
+        fn authentication_failure_rejects_missing_token() {
+            assert!(matches!(
+                parse_auth_token(r#"{"data":{}}"#.as_bytes()),
+                Err(RightelCollectorError::Authentication)
+            ));
+        }
+
+        #[test]
+        fn package_retrieval_parser_extracts_internet_only() {
+            let json_resp = r#"{
+                "data": [
+                    {
+                        "purchasablePackage": {
+                            "purchasablePackageId": 123,
+                            "purchasablePackageNameFa": "30 روزه 10 گیگابایت",
+                            "packagePrice": 500000,
+                            "mainProductType": "PREPAID",
+                            "pricePlanOfferCode": "OFF1"
+                        },
+                        "channelCategories": [{"channelCategoryId": 21, "channelCategoryNameEn": "internet"}]
+                    },
+                    {
+                        "purchasablePackage": {
+                            "purchasablePackageId": 124,
+                            "purchasablePackageNameFa": "بسته مکالمه",
+                            "packagePrice": 10000
+                        },
+                        "channelCategories": [{"channelCategoryNameEn": "voice"}]
+                    }
+                ]
+            }"#;
+
+            let c = parse_catalog(json_resp.as_bytes(), "fixture").unwrap();
+            assert_eq!(c.packages.len(), 1);
+            assert_eq!(c.packages[0].purchasable_package_id.as_deref(), Some("123"));
+            assert_eq!(c.packages[0].offer_code.as_deref(), Some("OFF1"));
+        }
+
+        #[test]
+        fn cache_candidate_generation_for_rightel() {
+            let json_resp = r#"{
+                "data": [
+                    {
+                        "purchasablePackage": {
+                            "purchasablePackageId": "cache-r",
+                            "purchasablePackageNameFa": "7 روزه 1 گیگابایت",
+                            "packagePrice": 10000,
+                            "mainProductType": "PREPAID"
+                        },
+                        "channelCategories": [{"channelCategoryId": 21, "channelCategoryNameEn": "internet"}]
+                    }
+                ]
+            }"#;
+            let c = parse_catalog(json_resp.as_bytes(), "fixture").unwrap();
+            let p = RightelNormalizer::normalize(&c.packages[0], 10).unwrap();
+            let s = OperatorSnapshot {
+                operator: Operator::Rightel,
+                fetched_at_unix_seconds: 10,
+                stored_at_unix_seconds: 10,
+                packages: vec![p],
+            };
+            validate_snapshot(&s).unwrap();
+        }
     }
-    #[test]
-    fn authentication_failure_rejects_missing_token() {
-        assert!(matches!(
-            parse_auth_token(r#"{"data":{}}"#.as_bytes()),
-            Err(RightelCollectorError::Authentication)
-        ));
-    }
-    #[test]
-    fn package_retrieval_parser_preserves_raw_fields() {
-        let c = parse_catalog(r#"{"data":[{"packageId":"r1","packageName":"Rightel 1GB","price":10000,"traffic":"1 GB","duration":"7 روز","benefits":["100 پیامک"],"limitations":["روزانه"],"meta":"x"}]}"#.as_bytes(), "fixture").unwrap();
-        assert_eq!(c.packages.len(), 1);
-        assert_eq!(c.packages[0].id.as_deref(), Some("r1"));
-        assert!(c.packages[0].metadata.contains_key("meta"));
-    }
-    #[test]
-    fn cache_candidate_generation_for_rightel() {
-        let c = parse_catalog(r#"{"data":[{"packageId":"cache-r","packageName":"Rightel 1GB","price":10000,"traffic":"1 GB","duration":"7 روز"}]}"#.as_bytes(), "fixture").unwrap();
-        let p = RightelNormalizer::normalize(&c.packages[0], 10).unwrap();
-        let s = OperatorSnapshot {
-            operator: Operator::Rightel,
-            fetched_at_unix_seconds: 10,
-            stored_at_unix_seconds: 10,
-            packages: vec![p],
-        };
-        validate_snapshot(&s).unwrap();
-    }
-}

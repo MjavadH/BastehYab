@@ -11,7 +11,7 @@ use thiserror::Error;
 
 pub const MCI_PAGE_URL: &str = "https://mci.ir/internet-plans";
 const MCI_PRODUCTS_URL: &str =
-    "https://shop.mci.ir/api/search/v1/products?category=20&page=0&size=100";
+    "https://shop.mci.ir/api/search/v1/products?category=19&page=0&size=100";
 const MAX_RESPONSE_BYTES: u64 = 2 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
@@ -82,9 +82,6 @@ impl Collector for MCICollector {
             .map_err(|e| CollectorError::Failed(e.to_string()))?;
         let raw_record_count = catalog.packages.len();
         println!("MCI products collected: {raw_record_count}");
-        if let Some(first) = catalog.packages.first() {
-            println!("First parsed MCI package: {first:?}");
-        }
         let mut packages = Vec::new();
         let mut normalization_failures = 0;
         for raw in catalog.packages {

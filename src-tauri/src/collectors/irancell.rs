@@ -82,6 +82,7 @@ impl Collector for IrancellCollector {
             .collect_raw()
             .map_err(|e| CollectorError::Failed(e.to_string()))?;
         let raw_record_count = catalog.packages.len();
+        println!("Irancell products collected: {raw_record_count}");
         let mut packages = Vec::new();
         let mut normalization_failures = 0;
         for raw in catalog.packages {

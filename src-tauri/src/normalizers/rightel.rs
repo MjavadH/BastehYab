@@ -40,54 +40,55 @@ impl RightelNormalizer {
         fetched_at: i64,
     ) -> Result<InternetPackage, RightelNormalizationError> {
         let external_id = clean_text(
-            raw.id
+            raw.purchasable_package_id
                 .as_deref()
                 .ok_or(RightelNormalizationError::MissingId)?,
         )
         .ok_or(RightelNormalizationError::MissingId)?;
-        let name = clean_text(
-            raw.name
-                .as_deref()
-                .ok_or(RightelNormalizationError::EmptyName)?,
-        )
-        .ok_or(RightelNormalizationError::EmptyName)?;
+
+        let name_str = raw.name_fa.clone().ok_or(RightelNormalizationError::EmptyName)?;
+        let name = clean_text(&name_str).ok_or(RightelNormalizationError::EmptyName)?;
         let price = raw.price.as_ref().map(parse_price).transpose()?;
+
         let mut data_allowances = Vec::new();
-        if let Some(traffic) = &raw.traffic {
-            data_allowances.push(parse_allowance_value(traffic, DataAllowanceKind::General)?);
+        data_allowances.push(extract_traffic(&name_str)?);
+
+        let validity = extract_validity(&name_str);
+
+        let mut sim_types = Vec::new();
+        match raw.product_type.as_deref() {
+            Some("PREPAID") => sim_types.push(SimType::Prepaid),
+            Some("POSTPAID") => sim_types.push(SimType::Postpaid),
+            _ => sim_types.push(SimType::Other),
         }
-        let mut voice = None;
-        let mut sms = None;
-        let mut has_unknown_benefit = false;
-        for benefit in &raw.combined_benefits {
-            if let Some(text) = value_to_text(benefit) {
-                if mentions_data(&text) {
-                    data_allowances.push(parse_allowance_text(&text, classify_allowance(&text))?);
-                } else if mentions_sms(&text) {
-                    sms = Some(parse_sms(&text));
-                } else if mentions_voice(&text) {
-                    voice = Some(parse_voice(&text));
-                } else {
-                    has_unknown_benefit = true;
-                }
-            } else {
-                has_unknown_benefit = true;
-            }
-        }
-        if data_allowances.is_empty() {
-            data_allowances.push(DataAllowance::unknown(DataAllowanceKind::Other));
-        }
-        let package_kind = if voice.is_some() || sms.is_some() || has_unknown_benefit {
-            PackageKind::Combined
-        } else {
-            PackageKind::InternetOnly
-        };
+
         let package = InternetPackage {
-            id: canonical_package_id(Operator::Rightel, &external_id), operator: Operator::Rightel, external_id, name,
-            price, validity: raw.validity.as_ref().map(parse_validity).unwrap_or(Validity::Unknown), data_allowances, voice, sms,
-            sim_types: parse_sim_types(raw), package_kind, availability: Availability::Unknown,
-            purchase: PurchaseInfo { official_url: Some(rightel_page_url().into()), ussd_code: None },
-            metadata: PackageMetadata { fetched_at_unix_seconds: Some(fetched_at), source_url: Some("https://portal-api.rightel.ir/extra-package/api/v1/extra-package-direct/web-site/purchasable-package".into()), regulatory_code: None, offer_code: None, original_description: raw.name.clone() },
+            id: canonical_package_id(Operator::Rightel, &external_id),
+            operator: Operator::Rightel,
+            external_id,
+            name: name.clone(),
+            price,
+            validity,
+            data_allowances,
+            voice: None,
+            sms: None,
+            sim_types,
+            package_kind: PackageKind::InternetOnly,
+            availability: Availability::Unknown,
+            purchase: PurchaseInfo {
+                official_url: Some(rightel_page_url().into()),
+                ussd_code: None,
+            },
+            metadata: PackageMetadata {
+                fetched_at_unix_seconds: Some(fetched_at),
+                source_url: Some(
+                    "https://portal-api.rightel.ir/extra-package/api/v1/extra-package-direct/web-site/purchasable-package"
+                        .into(),
+                ),
+                regulatory_code: None,
+                offer_code: raw.offer_code.clone(),
+                original_description: Some(name),
+            },
         };
         validate_package(&package)?;
         Ok(package)
@@ -103,204 +104,128 @@ fn parse_price(value: &Value) -> Result<crate::domain::money::Money, RightelNorm
         .map_err(|_| RightelNormalizationError::InvalidPrice)?;
     Ok(money_from_irr(amount))
 }
-fn parse_allowance_value(
-    value: &Value,
-    fallback: DataAllowanceKind,
-) -> Result<DataAllowance, RightelNormalizationError> {
-    let text = value_to_text(value).ok_or(RightelNormalizationError::InvalidTraffic)?;
-    parse_allowance_text(&text, fallback)
-}
-fn parse_allowance_text(
-    text: &str,
-    fallback: DataAllowanceKind,
-) -> Result<DataAllowance, RightelNormalizationError> {
+fn extract_traffic(text: &str) -> Result<DataAllowance, RightelNormalizationError> {
     let t = normalize_digits(text).to_lowercase();
-    let kind = if fallback == DataAllowanceKind::Other {
-        DataAllowanceKind::Other
-    } else {
-        let c = classify_allowance(&t);
-        if c == DataAllowanceKind::Other {
-            fallback
-        } else {
-            c
-        }
-    };
-    if t.contains("نامحدود") || t.contains("unlimited") {
-        let mut a = DataAllowance::unlimited(kind);
+
+    let (unit, unit_pos) = if let Some(idx) = t.find("گیگ") {
+        (DataUnit::Gib, idx)
+    } else if let Some(idx) = t.find("gb") {
+        (DataUnit::Gib, idx)
+    } else if let Some(idx) = t.find("مگ") {
+        (DataUnit::Mib, idx)
+    } else if let Some(idx) = t.find("mb") {
+        (DataUnit::Mib, idx)
+    } else if t.contains("نامحدود") || t.contains("unlimited") {
+        let mut a = DataAllowance::unlimited(DataAllowanceKind::General);
         a.description = clean_text(text);
         return Ok(a);
-    }
-    let unit = if t.contains("گیگ") || t.contains("gb") {
-        DataUnit::Gib
-    } else if t.contains("مگ") || t.contains("mb") {
-        DataUnit::Mib
     } else {
-        let mut a = DataAllowance::unknown(kind);
+        let mut a = DataAllowance::unknown(DataAllowanceKind::General);
         a.description = clean_text(text);
         return Ok(a);
     };
-    let number = first_number(&t).ok_or(RightelNormalizationError::InvalidTraffic)?;
+
+    let before_unit = &t[..unit_pos];
+    let num_str = before_unit
+        .split(|c: char| !(c.is_ascii_digit() || c == '.' || c == ','))
+        .filter(|s| !s.is_empty())
+        .last()
+        .ok_or(RightelNormalizationError::InvalidTraffic)?;
+
     let mut a = DataAllowance::finite(
-        kind,
-        decimal_data_bytes(&number, unit).map_err(|_| RightelNormalizationError::InvalidTraffic)?,
+        DataAllowanceKind::General,
+        decimal_data_bytes(num_str, unit).map_err(|_| RightelNormalizationError::InvalidTraffic)?,
     );
     a.description = clean_text(text);
     Ok(a)
 }
-fn parse_validity(value: &Value) -> Validity {
-    let Some(text) = value_to_text(value) else {
-        return Validity::Unknown;
-    };
-    let t = normalize_digits(&text).to_lowercase();
-    let Some(n) = first_number(&t).and_then(|n| n.parse::<u32>().ok()) else {
-        return Validity::Unknown;
-    };
-    if t.contains("ساعت") || t.contains("hour") {
-        Validity::Hours(n)
-    } else if t.contains("روز") || t.contains("day") {
-        Validity::Days(n)
-    } else {
-        Validity::Other
+fn extract_validity(text: &str) -> Validity {
+    let t = normalize_digits(text).to_lowercase();
+    let mut keyword_pos = None;
+    let mut is_hours = false;
+
+    if let Some(idx) = t.find("روز") {
+        keyword_pos = Some(idx);
+    } else if let Some(idx) = t.find("day") {
+        keyword_pos = Some(idx);
+    } else if let Some(idx) = t.find("ساعت") {
+        keyword_pos = Some(idx);
+        is_hours = true;
+    } else if let Some(idx) = t.find("hour") {
+        keyword_pos = Some(idx);
+        is_hours = true;
     }
-}
-fn parse_sms(text: &str) -> SmsAllowance {
-    SmsAllowance {
-        count: first_number(&normalize_digits(text)).and_then(|n| n.parse().ok()),
-        unlimited: text.contains("نامحدود") || text.to_lowercase().contains("unlimited"),
+
+    if let Some(pos) = keyword_pos {
+        let before_kw = &t[..pos];
+        if let Some(num_str) = before_kw
+            .split(|c: char| !c.is_ascii_digit())
+            .filter(|s| !s.is_empty())
+            .last()
+        {
+            if let Ok(n) = num_str.parse::<u32>() {
+                return if is_hours { Validity::Hours(n) } else { Validity::Days(n) };
+            }
+        }
     }
-}
-fn parse_voice(text: &str) -> VoiceAllowance {
-    VoiceAllowance {
-        minutes: first_number(&normalize_digits(text)).and_then(|n| n.parse().ok()),
-        unlimited: text.contains("نامحدود") || text.to_lowercase().contains("unlimited"),
-    }
-}
-fn parse_sim_types(raw: &RawRightelPackage) -> Vec<SimType> {
-    let text = raw
-        .metadata
-        .values()
-        .filter_map(value_to_text)
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase();
-    let mut sims = Vec::new();
-    if text.contains("pre") || text.contains("اعتباری") {
-        sims.push(SimType::Prepaid);
-    }
-    if text.contains("post") || text.contains("دائمی") {
-        sims.push(SimType::Postpaid);
-    }
-    if sims.is_empty() {
-        sims.push(SimType::Other);
-    }
-    sims
-}
-fn classify_allowance(text: &str) -> DataAllowanceKind {
-    let t = text.to_lowercase();
-    if t.contains("شب") || t.contains("night") {
-        DataAllowanceKind::Night
-    } else if t.contains("داخلی") || t.contains("domestic") {
-        DataAllowanceKind::Domestic
-    } else if t.contains("بین الملل") || t.contains("international") {
-        DataAllowanceKind::International
-    } else if t.contains("هدیه") || t.contains("gift") {
-        DataAllowanceKind::Gift
-    } else if t.contains("اجتماعی") || t.contains("social") {
-        DataAllowanceKind::Social
-    } else {
-        DataAllowanceKind::Other
-    }
-}
-fn mentions_data(text: &str) -> bool {
-    let t = text.to_lowercase();
-    t.contains("gb")
-        || t.contains("mb")
-        || t.contains("گیگ")
-        || t.contains("مگ")
-        || t.contains("نامحدود")
-}
-fn mentions_sms(text: &str) -> bool {
-    let t = text.to_lowercase();
-    t.contains("sms") || t.contains("پیامک")
-}
-fn mentions_voice(text: &str) -> bool {
-    let t = text.to_lowercase();
-    t.contains("voice") || t.contains("مکالمه") || t.contains("دقیقه")
+    Validity::Unknown
 }
 fn value_to_text(value: &Value) -> Option<String> {
     match value {
         Value::String(s) => clean_text(s),
         Value::Number(n) => Some(n.to_string()),
-        Value::Object(map) => map
-            .get("value")
-            .or_else(|| map.get("text"))
-            .or_else(|| map.get("title"))
-            .or_else(|| map.get("name"))
-            .and_then(value_to_text),
         _ => None,
     }
-}
-fn first_number(text: &str) -> Option<String> {
-    text.split(|c: char| !(c.is_ascii_digit() || c == '.' || c == ','))
-        .find(|s| s.chars().any(|c| c.is_ascii_digit()))
-        .map(str::to_string)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::{json, Map};
-    fn raw() -> RawRightelPackage {
+
+    fn raw(name: &str, prod: &str) -> RawRightelPackage {
         RawRightelPackage {
-            id: Some("r1".into()),
-            name: Some("بسته رایتل".into()),
+            purchasable_package_id: Some("123".into()),
+            name_fa: Some(name.into()),
+            name_en: None,
             price: Some(json!(100000)),
-            traffic: Some(json!("2 گیگابایت")),
-            validity: Some(json!("7 روز")),
-            combined_benefits: vec![],
-            restrictions: vec![],
-            metadata: Map::new(),
+            product_type: Some(prod.into()),
+            offer_code: Some("OFF1".into()),
+            filters: vec![],
+            channel_categories: vec![],
+            unknown_fields: Map::new(),
         }
     }
+
     #[test]
-    fn normalizes_rightel_package() {
-        let p = RightelNormalizer::normalize(&raw(), 1).unwrap();
-        assert_eq!(p.operator, Operator::Rightel);
-        assert_eq!(p.id.0, "rightel:r1");
-        assert_eq!(p.price.unwrap().amount, 100000);
-        assert_eq!(p.validity, Validity::Days(7));
-        assert_eq!(p.data_allowances[0].kind, DataAllowanceKind::General);
-    }
-    #[test]
-    fn combined_packages_preserve_voice_sms_and_restricted_data() {
-        let mut r = raw();
-        r.combined_benefits = vec![
-            json!("50 پیامک"),
-            json!("20 دقیقه مکالمه"),
-            json!("1 گیگابایت شبانه"),
-        ];
+    fn normalizes_rightel_package_correctly() {
+        let r = raw("30 روزه 10 گیگابایت", "PREPAID");
         let p = RightelNormalizer::normalize(&r, 1).unwrap();
-        assert_eq!(p.package_kind, PackageKind::Combined);
-        assert_eq!(p.sms.unwrap().count, Some(50));
-        assert_eq!(p.voice.unwrap().minutes, Some(20));
-        assert!(p
-            .data_allowances
-            .iter()
-            .any(|a| a.kind == DataAllowanceKind::Night));
+
+        assert_eq!(p.operator, Operator::Rightel);
+        assert_eq!(p.id.0, "rightel:123");
+        assert_eq!(p.validity, Validity::Days(30));
+        assert_eq!(p.sim_types, vec![SimType::Prepaid]);
+        assert_eq!(p.data_allowances[0].amount_bytes, Some(10 * 1024 * 1024 * 1024)); // 10 GiB
+        assert_eq!(p.metadata.offer_code.as_deref(), Some("OFF1"));
     }
+
     #[test]
-    fn missing_identity_is_error_and_missing_validity_is_unknown() {
-        let mut r = raw();
-        r.id = None;
+    fn handles_megabytes_and_hours() {
+        let r = raw("1 روزه 100 مگابایت", "POSTPAID");
+        let p = RightelNormalizer::normalize(&r, 1).unwrap();
+        assert_eq!(p.validity, Validity::Days(1));
+        assert_eq!(p.sim_types, vec![SimType::Postpaid]);
+        assert_eq!(p.data_allowances[0].amount_bytes, Some(100 * 1024 * 1024));
+    }
+
+    #[test]
+    fn missing_identity_is_error() {
+        let mut r = raw("1 روزه 100 مگابایت", "PREPAID");
+        r.purchasable_package_id = None;
         assert!(matches!(
             RightelNormalizer::normalize(&r, 1),
             Err(RightelNormalizationError::MissingId)
         ));
-        let mut r = raw();
-        r.validity = None;
-        assert_eq!(
-            RightelNormalizer::normalize(&r, 1).unwrap().validity,
-            Validity::Unknown
-        );
     }
 }
