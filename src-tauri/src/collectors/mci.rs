@@ -46,7 +46,7 @@ impl MCICollector {
                 "--header",
                 "Accept: application/json",
                 "--user-agent",
-                "BastehYab/0.1 (+https://github.com/BastehYab/BastehYab)",
+                "BastehYab/0.1 (+https://github.com/MjavadH/BastehYab)",
                 &url,
             ])
             .output()
@@ -264,7 +264,7 @@ fn package_identity(p: &RawMCIPackage) -> Option<String> {
         .or_else(|| p.ussd_code.clone())
         .or_else(|| p.title.clone())
 }
-fn any_key<'a>(m: &'a Map<String, Value>, keys: &[&str]) -> Option<&'a str> {
+fn any_key<'a>(m: &'a Map<String, Value>, keys: &[&'a str]) -> Option<&'a str> {
     keys.iter().copied().find(|k| m.contains_key(*k))
 }
 fn take_value(m: &mut Map<String, Value>, keys: &[&str]) -> Option<Value> {

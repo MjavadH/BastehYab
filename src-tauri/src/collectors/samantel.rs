@@ -44,7 +44,7 @@ impl SamantelCollector {
                 "--header",
                 "Accept: text/html,application/xhtml+xml",
                 "--user-agent",
-                "BastehYab/0.1 (+https://github.com/BastehYab/BastehYab)",
+                "BastehYab/0.1 (+https://github.com/MjavadH/BastehYab)",
                 &self.source_url,
             ])
             .output()

@@ -124,7 +124,7 @@ fn curl(args: &[&str], timeout: Duration) -> Result<Vec<u8>, RightelCollectorErr
         "--max-time",
         &timeout,
         "--user-agent",
-        "BastehYab/0.1 (+https://github.com/BastehYab/BastehYab)",
+        "BastehYab/0.1 (+https://github.com/MjavadH/BastehYab)",
     ];
     full.extend_from_slice(args);
     let output = Command::new("curl")
@@ -248,7 +248,7 @@ fn raw_from_map(map: &Map<String, Value>) -> RawRightelPackage {
         metadata,
     }
 }
-fn any_key<'a>(map: &'a Map<String, Value>, keys: &[&str]) -> Option<&'a str> {
+fn any_key<'a>(map: &'a Map<String, Value>, keys: &[&'a str]) -> Option<&'a str> {
     keys.iter().copied().find(|k| map.contains_key(*k))
 }
 fn take_value(map: &mut Map<String, Value>, keys: &[&str]) -> Option<Value> {

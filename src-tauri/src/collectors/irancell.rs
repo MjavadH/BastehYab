@@ -48,7 +48,7 @@ impl IrancellCollector {
                 "--header",
                 "Accept: application/json",
                 "--user-agent",
-                "BastehYab/0.1 (+https://github.com/BastehYab/BastehYab)",
+                "BastehYab/0.1 (+https://github.com/MjavadH/BastehYab)",
                 &self.source_url,
             ])
             .output()
@@ -231,7 +231,7 @@ fn raw_from_map(map: &Map<String, Value>) -> RawIrancellPackage {
     }
 }
 
-fn any_key<'a>(map: &'a Map<String, Value>, keys: &[&str]) -> Option<&'a str> {
+fn any_key<'a>(map: &'a Map<String, Value>, keys: &[&'a str]) -> Option<&'a str> {
     keys.iter().copied().find(|k| map.contains_key(*k))
 }
 fn take_value(map: &mut Map<String, Value>, keys: &[&str]) -> Option<Value> {

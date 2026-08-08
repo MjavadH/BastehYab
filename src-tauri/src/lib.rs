@@ -9,6 +9,8 @@ pub mod normalizers;
 pub mod recommendations;
 pub mod refresh;
 
+use tauri::Manager;
+
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
