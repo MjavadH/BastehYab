@@ -2486,10 +2486,7 @@ bastehyab/
 │   ├── recommendations/
 │   │   └── SKILL.md
 │   │
-│   ├── cache/
-│   │   └── SKILL.md
-│   │
-│   └── ui/
+│   └── cache/
 │       └── SKILL.md
 │
 ├── src/
