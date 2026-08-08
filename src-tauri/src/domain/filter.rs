@@ -1,1 +1,1 @@
-//! Domain-level package filtering will live here.
+pub use super::recommendation::PackageFilters;
