@@ -117,18 +117,44 @@ pub struct IrancellPagination {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct RawIrancellPackage {
+    #[serde(alias = "_id")]
     pub id: Option<String>,
-    pub title: Option<String>,
+    pub name: Option<LocalizedText>,
     pub price: Option<Value>,
-    pub volume: Option<Value>,
-    pub validity: Option<Value>,
-    pub category: Option<String>,
-    pub extra_benefits: Vec<Value>,
-    pub restrictions: Vec<Value>,
-    pub availability: Option<Value>,
-    pub purchase_url: Option<String>,
+    #[serde(default)]
+    pub specification_contents: Vec<IrancellSpecificationContent>,
+    pub prepaid_offer_code: Option<String>,
+    pub postpaid_offer_code: Option<String>,
+    pub ldms_offer_code: Option<String>,
+    pub service_name: Option<String>,
+    pub technology: Option<String>,
+    #[serde(flatten)]
+    pub unknown_fields: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct LocalizedText {
+    pub en: Option<String>,
+    pub fa: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IrancellSpecificationContent {
+    pub key: Option<String>,
+    pub value: Option<Value>,
+    pub desc: Option<LocalizedText>,
+    #[serde(default)]
+    pub items: Vec<IrancellSpecificationItem>,
+    #[serde(flatten)]
+    pub unknown_fields: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IrancellSpecificationItem {
+    pub value: Option<Value>,
+    pub desc: Option<LocalizedText>,
+    #[serde(flatten)]
     pub unknown_fields: Map<String, Value>,
 }
 
@@ -175,7 +201,11 @@ fn collect_package_objects(value: &Value, out: &mut Vec<RawIrancellPackage>) {
         Value::Array(items) => items.iter().for_each(|v| collect_package_objects(v, out)),
         Value::Object(map) => {
             if is_package_like(map) {
-                out.push(raw_from_map(map));
+                if let Ok(raw) =
+                    serde_json::from_value::<RawIrancellPackage>(Value::Object(map.clone()))
+                {
+                    out.push(raw);
+                }
             } else {
                 map.values().for_each(|v| collect_package_objects(v, out));
             }
@@ -185,75 +215,27 @@ fn collect_package_objects(value: &Value, out: &mut Vec<RawIrancellPackage>) {
 }
 
 fn is_package_like(map: &Map<String, Value>) -> bool {
-    let has_identity = any_key(map, &["id", "_id", "productId", "code", "offerCode"]).is_some();
-    let has_name = any_key(map, &["title", "name", "productName", "packageName"]).is_some();
-    let has_commercial = any_key(map, &["price", "amount", "fee", "cost"]).is_some()
-        || any_key(map, &["volume", "traffic", "data", "internet"]).is_some();
-    has_identity && has_name && has_commercial
-}
-
-fn raw_from_map(map: &Map<String, Value>) -> RawIrancellPackage {
-    let mut unknown = map.clone();
-    let id = take_string(
-        &mut unknown,
-        &["id", "_id", "productId", "code", "offerCode"],
-    );
-    let title = take_string(
-        &mut unknown,
-        &["title", "name", "productName", "packageName"],
-    );
-    let price = take_value(&mut unknown, &["price", "amount", "fee", "cost"]);
-    let volume = take_value(&mut unknown, &["volume", "traffic", "data", "internet"]);
-    let validity = take_value(&mut unknown, &["validity", "duration", "period"]);
-    let category = take_string(&mut unknown, &["category", "type", "packageType"]);
-    let availability = take_value(
-        &mut unknown,
-        &["availability", "available", "status", "isActive"],
-    );
-    let purchase_url = take_string(&mut unknown, &["purchaseUrl", "buyUrl", "url"]);
-    let extra_benefits = take_array(
-        &mut unknown,
-        &["extraBenefits", "benefits", "gifts", "addons"],
-    );
-    let restrictions = take_array(&mut unknown, &["restrictions", "limitations", "terms"]);
-    RawIrancellPackage {
-        id,
-        title,
-        price,
-        volume,
-        validity,
-        category,
-        extra_benefits,
-        restrictions,
-        availability,
-        purchase_url,
-        unknown_fields: unknown,
-    }
-}
-
-fn any_key<'a>(map: &'a Map<String, Value>, keys: &[&'a str]) -> Option<&'a str> {
-    keys.iter().copied().find(|k| map.contains_key(*k))
-}
-fn take_value(map: &mut Map<String, Value>, keys: &[&str]) -> Option<Value> {
-    let k = any_key(map, keys)?.to_string();
-    map.remove(&k)
-}
-fn take_string(map: &mut Map<String, Value>, keys: &[&str]) -> Option<String> {
-    take_value(map, keys).and_then(value_to_string)
-}
-fn take_array(map: &mut Map<String, Value>, keys: &[&str]) -> Vec<Value> {
-    match take_value(map, keys) {
-        Some(Value::Array(v)) => v,
-        Some(v) => vec![v],
-        None => Vec::new(),
-    }
-}
-fn value_to_string(v: Value) -> Option<String> {
-    match v {
-        Value::String(s) if !s.trim().is_empty() => Some(s),
-        Value::Number(n) => Some(n.to_string()),
-        _ => None,
-    }
+    let has_identity = map.contains_key("id") || map.contains_key("_id");
+    let has_specs = map
+        .get("specification_contents")
+        .and_then(Value::as_array)
+        .is_some_and(|items| {
+            let mut has_traffic = false;
+            let mut has_validity = false;
+            let mut has_sim = false;
+            for item in items {
+                if let Some(key) = item.get("key").and_then(Value::as_str) {
+                    match key {
+                        "traffic" => has_traffic = true,
+                        "package_type" => has_validity = true,
+                        "simcard_type" => has_sim = true,
+                        _ => {}
+                    }
+                }
+            }
+            has_traffic && has_validity && has_sim
+        });
+    has_identity && has_specs
 }
 
 fn extract_pagination(root: &Value) -> IrancellPagination {
@@ -312,7 +294,7 @@ mod tests {
 
     #[test]
     fn parsed_and_normalized_packages_are_cache_candidates() {
-        let json = r#"{"products":[{"id":"cache-1","title":"Cache Package","price":1000,"volume":"1 GB","validity":"7 day","available":true}]}"#;
+        let json = r#"{"products":[{"id":"cache-1","price":1000,"specification_contents":[{"key":"simcard_type","value":"prepaid"},{"key":"package_type","value":"7days"},{"key":"traffic","desc":{"en":"1024"}}]}]}"#;
         let catalog = parse_catalog(json.as_bytes(), "fixture").unwrap();
         let package = IrancellNormalizer::normalize(&catalog.packages[0], 10).unwrap();
         assert_eq!(package.operator, Operator::Irancell);
