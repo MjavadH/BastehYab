@@ -1,6 +1,7 @@
 //! Operator-independent normalization helpers and validation for canonical packages.
 
 pub mod irancell;
+pub mod rightel;
 
 use thiserror::Error;
 
