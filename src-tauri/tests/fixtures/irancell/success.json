@@ -3,13 +3,15 @@
     "products": [
       {
         "id": "pkg-1",
-        "title": "بسته ۱۰ گیگابایت",
         "price": 120000,
-        "volume": "10 GB",
-        "validity": "30 روز",
-        "category": "prepaid",
-        "extraBenefits": ["100 دقیقه"],
-        "restrictions": ["مصرف منصفانه"],
+        "specification_contents": [
+          {"key":"simcard_type","value":"prepaid-postpaid"},
+          {"key":"package_type","value":"30days","desc":{"en":"30 Days","fa":"30 روزه"}},
+          {"key":"traffic","value":"","desc":{"en":"10240","fa":"10240"}},
+          {"key":"ussd","desc":{"en":"*555#"}}
+        ],
+        "prepaid_offer_code": "PO1",
+        "postpaid_offer_code": "PO2",
         "mystery": "kept"
       }
     ]
