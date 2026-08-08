@@ -3,6 +3,7 @@ use serde::Serialize;
 pub mod packages;
 pub mod recommendations;
 pub mod refresh;
+pub mod status;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
