@@ -50,6 +50,15 @@ pub fn compare_packages<'a>(
     selected
 }
 
+pub fn sort_by_best_value(packages: &mut [InternetPackage]) {
+    packages.sort_by(|a, b| match (evaluate_value(a), evaluate_value(b)) {
+        (Some(a), Some(b)) => compare_value(&a, &b),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => stable_identity(a).cmp(&stable_identity(b)),
+    });
+}
+
 pub fn recommend(
     packages: &[InternetPackage],
     strategy: RecommendationStrategy,
