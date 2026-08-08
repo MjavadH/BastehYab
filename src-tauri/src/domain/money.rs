@@ -12,3 +12,12 @@ pub struct Money {
     pub amount: u64,
     pub currency: Currency,
 }
+
+impl Money {
+    pub const fn irr(amount: u64) -> Self {
+        Self {
+            amount,
+            currency: Currency::Irr,
+        }
+    }
+}
