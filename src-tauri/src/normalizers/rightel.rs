@@ -12,8 +12,8 @@ use crate::{
         },
     },
     normalizers::{
-        canonical_package_id, clean_text, decimal_data_bytes, money_from_irr, normalize_digits,
-        validate_package, DataUnit, NormalizationError,
+        canonical_package_id, clean_text, decimal_data_bytes, is_night_time_window, money_from_irr,
+        normalize_digits, time_window_from_text, validate_package, DataUnit, NormalizationError,
     },
 };
 
@@ -46,7 +46,10 @@ impl RightelNormalizer {
         )
         .ok_or(RightelNormalizationError::MissingId)?;
 
-        let name_str = raw.name_fa.clone().ok_or(RightelNormalizationError::EmptyName)?;
+        let name_str = raw
+            .name_fa
+            .clone()
+            .ok_or(RightelNormalizationError::EmptyName)?;
         let name = clean_text(&name_str).ok_or(RightelNormalizationError::EmptyName)?;
         let price = raw.price.as_ref().map(parse_price).transpose()?;
 
@@ -116,11 +119,17 @@ fn extract_traffic(text: &str) -> Result<DataAllowance, RightelNormalizationErro
     } else if let Some(idx) = t.find("mb") {
         (DataUnit::Mib, idx)
     } else if t.contains("نامحدود") || t.contains("unlimited") {
-        let mut a = DataAllowance::unlimited(DataAllowanceKind::General);
+        let window = time_window_from_text(text)?;
+        let kind = classify_restriction(text, window);
+        let mut a = DataAllowance::unlimited(kind);
+        a.time_window = window;
         a.description = clean_text(text);
         return Ok(a);
     } else {
-        let mut a = DataAllowance::unknown(DataAllowanceKind::General);
+        let window = time_window_from_text(text)?;
+        let kind = classify_restriction(text, window);
+        let mut a = DataAllowance::unknown(kind);
+        a.time_window = window;
         a.description = clean_text(text);
         return Ok(a);
     };
@@ -132,12 +141,32 @@ fn extract_traffic(text: &str) -> Result<DataAllowance, RightelNormalizationErro
         .last()
         .ok_or(RightelNormalizationError::InvalidTraffic)?;
 
+    let window = time_window_from_text(text)?;
+    let kind = classify_restriction(text, window);
     let mut a = DataAllowance::finite(
-        DataAllowanceKind::General,
+        kind,
         decimal_data_bytes(num_str, unit).map_err(|_| RightelNormalizationError::InvalidTraffic)?,
     );
+    a.time_window = window;
     a.description = clean_text(text);
     Ok(a)
+}
+
+fn classify_restriction(
+    text: &str,
+    window: Option<crate::domain::allowance::TimeWindow>,
+) -> DataAllowanceKind {
+    let t = normalize_digits(text).to_lowercase();
+    if t.contains("رومینگ") || t.contains("roaming") {
+        DataAllowanceKind::International
+    } else if window.is_some_and(is_night_time_window) || t.contains("شبانه") || t.contains("night")
+    {
+        DataAllowanceKind::Night
+    } else if window.is_some() {
+        DataAllowanceKind::Other
+    } else {
+        DataAllowanceKind::General
+    }
 }
 fn extract_validity(text: &str) -> Validity {
     let t = normalize_digits(text).to_lowercase();
@@ -164,7 +193,11 @@ fn extract_validity(text: &str) -> Validity {
             .last()
         {
             if let Ok(n) = num_str.parse::<u32>() {
-                return if is_hours { Validity::Hours(n) } else { Validity::Days(n) };
+                return if is_hours {
+                    Validity::Hours(n)
+                } else {
+                    Validity::Days(n)
+                };
             }
         }
     }
@@ -206,7 +239,10 @@ mod tests {
         assert_eq!(p.id.0, "rightel:123");
         assert_eq!(p.validity, Validity::Days(30));
         assert_eq!(p.sim_types, vec![SimType::Prepaid]);
-        assert_eq!(p.data_allowances[0].amount_bytes, Some(10 * 1024 * 1024 * 1024)); // 10 GiB
+        assert_eq!(
+            p.data_allowances[0].amount_bytes,
+            Some(10 * 1024 * 1024 * 1024)
+        ); // 10 GiB
         assert_eq!(p.metadata.offer_code.as_deref(), Some("OFF1"));
     }
 
@@ -217,6 +253,32 @@ mod tests {
         assert_eq!(p.validity, Validity::Days(1));
         assert_eq!(p.sim_types, vec![SimType::Postpaid]);
         assert_eq!(p.data_allowances[0].amount_bytes, Some(100 * 1024 * 1024));
+    }
+
+    #[test]
+    fn classifies_night_roaming_and_daytime_limited_packages() {
+        let night =
+            RightelNormalizer::normalize(&raw("30 روزه 10 گیگابایت 2 شب تا 6 صبح", "PREPAID"), 1)
+                .unwrap();
+        assert_eq!(night.data_allowances[0].kind, DataAllowanceKind::Night);
+        assert_eq!(night.data_allowances[0].time_window.unwrap().start.hour, 2);
+
+        let daytime =
+            RightelNormalizer::normalize(&raw("1 روزه 5 گیگابایت 6 صبح تا 12", "PREPAID"), 1)
+                .unwrap();
+        assert_eq!(daytime.data_allowances[0].kind, DataAllowanceKind::Other);
+        assert_eq!(
+            daytime.data_allowances[0].time_window.unwrap().start.hour,
+            6
+        );
+
+        let roaming =
+            RightelNormalizer::normalize(&raw("بسته رومینگ 1 گیگابایت 7 روزه", "PREPAID"), 1)
+                .unwrap();
+        assert_eq!(
+            roaming.data_allowances[0].kind,
+            DataAllowanceKind::International
+        );
     }
 
     #[test]

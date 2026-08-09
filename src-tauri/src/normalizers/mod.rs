@@ -146,6 +146,83 @@ pub fn time_window(start: LocalTime, end: LocalTime) -> TimeWindow {
     TimeWindow { start, end }
 }
 
+/// Extracts simple textual local-time windows such as `2 شب تا 6 صبح`,
+/// `6 صبح تا 12`, or `02:00-07:00` without evaluating remote content.
+pub fn time_window_from_text(text: &str) -> Result<Option<TimeWindow>, NormalizationError> {
+    let normalized = normalize_digits(text).to_lowercase();
+    let Some((left, right)) = split_time_range(&normalized) else {
+        return Ok(None);
+    };
+    let Some(start) = parse_time_near_boundary(left, true)? else {
+        return Ok(None);
+    };
+    let Some(end) = parse_time_near_boundary(right, false)? else {
+        return Ok(None);
+    };
+    Ok(Some(time_window(start, end)))
+}
+
+pub fn is_night_time_window(window: TimeWindow) -> bool {
+    window.start.hour >= 22 || window.start.hour < 6 || window.end.hour <= 7
+}
+
+pub fn mentions_time_restriction(text: &str) -> bool {
+    let t = normalize_digits(text).to_lowercase();
+    t.contains("شبانه")
+        || t.contains("night")
+        || t.contains("صبح")
+        || t.contains("بامداد")
+        || t.contains("شب")
+        || t.contains("تا") && t.chars().any(|c| c.is_ascii_digit())
+        || t.contains("-") && t.chars().any(|c| c.is_ascii_digit())
+}
+
+fn split_time_range(text: &str) -> Option<(&str, &str)> {
+    for sep in [" تا ", " الی ", "الی", "to", "-", "–"] {
+        if let Some((left, right)) = text.split_once(sep) {
+            return Some((left, right));
+        }
+    }
+    None
+}
+
+fn parse_time_near_boundary(
+    text: &str,
+    from_end: bool,
+) -> Result<Option<LocalTime>, NormalizationError> {
+    let parts = text
+        .split(|c: char| !(c.is_ascii_digit() || c == ':'))
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>();
+    let Some(raw) = (if from_end {
+        parts.last()
+    } else {
+        parts.first()
+    }) else {
+        return Ok(None);
+    };
+    let (mut hour, minute) = if let Some((h, m)) = raw.split_once(':') {
+        (h.parse::<u8>().ok(), m.parse::<u8>().ok().unwrap_or(0))
+    } else {
+        (raw.parse::<u8>().ok(), 0)
+    };
+    let Some(mut h) = hour.take() else {
+        return Ok(None);
+    };
+    if (text.contains("بعدازظهر")
+        || text.contains("عصر")
+        || text.contains("شب")
+        || text.contains("pm"))
+        && h < 12
+    {
+        h = h.saturating_add(12);
+    }
+    if h == 24 {
+        h = 0;
+    }
+    local_time(h, minute).map(Some)
+}
+
 pub fn validate_package(package: &InternetPackage) -> Result<(), NormalizationError> {
     if package.external_id.trim().is_empty() {
         return Err(NormalizationError::MissingExternalId);

@@ -9,8 +9,8 @@ use crate::{
         },
     },
     normalizers::{
-        canonical_package_id, clean_text, decimal_data_bytes, local_time, money_from_toman,
-        normalize_digits, time_window, validate_package, DataUnit, NormalizationError,
+        canonical_package_id, clean_text, decimal_data_bytes, money_from_toman, normalize_digits,
+        time_window_from_text, validate_package, DataUnit, NormalizationError,
     },
 };
 use serde_json::Value;
@@ -139,7 +139,14 @@ fn parse_allowance_part(text: &str) -> Result<DataAllowance, MCINormalizationErr
         return Ok(unknown_with_description(kind, text));
     };
     let num = first_number(&t).ok_or(MCINormalizationError::InvalidVolume)?;
-    if t.contains("2am") || t.contains("2 am") || t.contains("شبانه") {
+    let parsed_window = time_window_from_text(text)?;
+    if let Some(window) = parsed_window {
+        kind = if crate::normalizers::is_night_time_window(window) {
+            DataAllowanceKind::Night
+        } else {
+            DataAllowanceKind::Other
+        };
+    } else if t.contains("2am") || t.contains("2 am") || t.contains("شبانه") {
         kind = DataAllowanceKind::Night;
     }
     let mut a = DataAllowance::finite(
@@ -147,9 +154,7 @@ fn parse_allowance_part(text: &str) -> Result<DataAllowance, MCINormalizationErr
         decimal_data_bytes(&num, unit).map_err(|_| MCINormalizationError::InvalidVolume)?,
     );
     a.description = clean_text(text);
-    if kind == DataAllowanceKind::Night && (t.contains("2am") || t.contains("2 am")) {
-        a.time_window = Some(time_window(local_time(2, 0)?, local_time(7, 0)?));
-    }
+    a.time_window = parsed_window;
     Ok(a)
 }
 fn parse_validity(v: &Value) -> Validity {
@@ -207,7 +212,9 @@ fn parse_availability(v: Option<&Value>) -> Availability {
 }
 fn classify_allowance(text: &str) -> DataAllowanceKind {
     let t = text.to_lowercase();
-    if t.contains("شب") || t.contains("night") || t.contains("2am") {
+    if t.contains("رومینگ") || t.contains("roaming") {
+        DataAllowanceKind::International
+    } else if t.contains("شب") || t.contains("night") || t.contains("2am") {
         DataAllowanceKind::Night
     } else if t.contains("داخلی") || t.contains("domestic") {
         DataAllowanceKind::Domestic

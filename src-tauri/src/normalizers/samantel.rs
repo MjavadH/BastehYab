@@ -12,8 +12,8 @@ use crate::{
         },
     },
     normalizers::{
-        canonical_package_id, clean_text, decimal_data_bytes, money_from_irr, normalize_digits,
-        validate_package, DataUnit, NormalizationError,
+        canonical_package_id, clean_text, decimal_data_bytes, is_night_time_window, money_from_irr,
+        normalize_digits, time_window_from_text, validate_package, DataUnit, NormalizationError,
     },
 };
 
@@ -107,20 +107,23 @@ fn parse_data_allowances(
     let total = positive_decimal_text(&raw.total_data);
     let mut allowances = Vec::new();
     if let Some(day) = day {
-        allowances.push(data_allowance(
-            data_kind_for_package_type(package_type, false),
-            &day,
+        allowances.push(apply_text_restriction(
+            data_allowance(data_kind_for_package_type(package_type, false), &day)?,
+            raw.offer_name.as_deref().unwrap_or_default(),
         )?);
     } else if night.is_none() {
         if let Some(total) = total {
-            allowances.push(data_allowance(
-                data_kind_for_package_type(package_type, false),
-                &total,
+            allowances.push(apply_text_restriction(
+                data_allowance(data_kind_for_package_type(package_type, false), &total)?,
+                raw.offer_name.as_deref().unwrap_or_default(),
             )?);
         }
     }
     if let Some(night) = night {
-        allowances.push(data_allowance(DataAllowanceKind::Night, &night)?);
+        allowances.push(apply_text_restriction(
+            data_allowance(DataAllowanceKind::Night, &night)?,
+            raw.offer_name.as_deref().unwrap_or_default(),
+        )?);
     }
     if allowances.is_empty() {
         return Err(SamantelNormalizationError::NoInternetQuota);
@@ -135,6 +138,24 @@ fn data_allowance(
     decimal_data_bytes(gb, DataUnit::Gib)
         .map(|bytes| DataAllowance::finite(kind, bytes))
         .map_err(|_| SamantelNormalizationError::InvalidVolume)
+}
+
+fn apply_text_restriction(
+    mut allowance: DataAllowance,
+    text: &str,
+) -> Result<DataAllowance, SamantelNormalizationError> {
+    let window =
+        time_window_from_text(text).map_err(|_| SamantelNormalizationError::InvalidVolume)?;
+    if let Some(window) = window {
+        allowance.kind = if is_night_time_window(window) {
+            DataAllowanceKind::Night
+        } else {
+            DataAllowanceKind::Other
+        };
+        allowance.time_window = Some(window);
+    }
+    allowance.description = clean_text(text);
+    Ok(allowance)
 }
 
 fn parse_voice(on: &Option<Value>, off: &Option<Value>) -> Option<VoiceAllowance> {
