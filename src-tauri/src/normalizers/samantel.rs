@@ -47,23 +47,28 @@ impl SamantelNormalizer {
                 .ok_or(SamantelNormalizationError::MissingId)?,
         )
         .ok_or(SamantelNormalizationError::MissingId)?;
-        let name = clean_text(
+        let mut name = clean_text(
             raw.offer_name
                 .as_deref()
                 .ok_or(SamantelNormalizationError::EmptyName)?,
         )
         .ok_or(SamantelNormalizationError::EmptyName)?;
+        if matches!(external_id.as_str(), "385" | "389" | "631") {
+                    if !name.contains("2x") && !name.contains("۲برابر") {
+                        name = format!("{} (2x)", name);
+                    }
+                }
         let package_type = raw.package_type.as_deref().unwrap_or_default();
         let voice = parse_voice(&raw.on_voice, &raw.off_voice);
         let sms = parse_sms(&raw.on_sms, &raw.off_sms);
-        let data_allowances = parse_data_allowances(raw, package_type)?;
+        let data_allowances = parse_data_allowances(raw, package_type, &external_id)?;
         let package_kind = classify_package_kind(package_type, voice.as_ref(), sms.as_ref());
         let package = InternetPackage {
             id: canonical_package_id(Operator::Samantel, &external_id),
             operator: Operator::Samantel,
             external_id,
             name: name.clone(),
-            price: raw.price.as_ref().map(parse_price).transpose()?,
+            price: raw.priceNoTax.as_ref().map(parse_price).transpose()?,
             validity: parse_validity(raw, &name),
             data_allowances,
             voice,
@@ -101,10 +106,25 @@ fn parse_price(v: &Value) -> Result<crate::domain::money::Money, SamantelNormali
 fn parse_data_allowances(
     raw: &RawSamantelPackage,
     package_type: &str,
+    external_id: &str,
 ) -> Result<Vec<DataAllowance>, SamantelNormalizationError> {
-    let day = positive_decimal_text(&raw.day_data);
+    let mut day = positive_decimal_text(&raw.day_data);
     let night = positive_decimal_text(&raw.night_data);
-    let total = positive_decimal_text(&raw.total_data);
+    let mut total = positive_decimal_text(&raw.total_data);
+
+    if matches!(external_id, "385" | "389" | "631") {
+        if let Some(ref val_str) = day {
+            if let Ok(n) = val_str.parse::<f64>() {
+                day = Some((n * 2.0).to_string());
+            }
+        }
+        if let Some(ref val_str) = total {
+            if let Ok(n) = val_str.parse::<f64>() {
+                total = Some((n * 2.0).to_string());
+            }
+        }
+    }
+
     let mut allowances = Vec::new();
     if let Some(day) = day {
         allowances.push(apply_text_restriction(

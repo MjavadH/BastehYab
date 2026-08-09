@@ -127,7 +127,7 @@ pub struct RawSamantelPackage {
     pub id: Option<String>,
     #[serde(rename = "OfferName")]
     pub offer_name: Option<String>,
-    pub price: Option<Value>,
+    pub priceNoTax: Option<Value>,
     #[serde(rename = "daydata")]
     pub day_data: Option<Value>,
     #[serde(rename = "nightdata")]
