@@ -57,6 +57,7 @@ export function FiltersPanel({
         {t(locale, "filters.priceMin")}
         <input
           type="number"
+          min={0}
           onChange={(e) =>
             onChange({
               ...query,
@@ -74,6 +75,7 @@ export function FiltersPanel({
         {t(locale, "filters.priceMax")}
         <input
           type="number"
+          min={0}
           onChange={(e) =>
             onChange({
               ...query,
@@ -91,6 +93,7 @@ export function FiltersPanel({
         {t(locale, "filters.minData")}
         <input
           type="number"
+          min={0}
           onChange={(e) =>
             onChange({
               ...query,

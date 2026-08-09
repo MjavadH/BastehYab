@@ -152,7 +152,7 @@ fn parse_sim_types(raw: &RawIrancellPackage) -> Vec<SimType> {
 
 fn generate_name(traffic_mb: u64, validity: Validity) -> String {
     let validity = match validity {
-        Validity::Days(days) => format!("{days} روزه"),
+        Validity::Days(days) => format!("بسته {days} روزه"),
         _ => "اعتبار نامشخص".to_string(),
     };
     format!("{} - {}", format_traffic(traffic_mb), validity)
