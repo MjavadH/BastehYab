@@ -258,7 +258,7 @@ fn evaluate_highest_volume(package: &InternetPackage) -> Option<Candidate<'_>> {
     (general > 0).then(|| Candidate {
         package,
         metrics: metrics(package),
-        score: RecommendationScore::Bytes(general),
+        score: RecommendationScore::Bytes {value: general},
         reasons: base_reasons(
             package,
             RecommendationReason::HighestGeneralData,
@@ -276,7 +276,7 @@ fn evaluate_cheapest(package: &InternetPackage) -> Option<Candidate<'_>> {
     Some(Candidate {
         package,
         metrics: metrics(package),
-        score: RecommendationScore::Price(price),
+        score: RecommendationScore::Price {value: price},
         reasons: base_reasons(
             package,
             RecommendationReason::CheapestUsefulOption,
@@ -301,7 +301,7 @@ fn evaluate_night(package: &InternetPackage) -> Option<Candidate<'_>> {
     (night > 0).then(|| Candidate {
         package,
         metrics: metrics(package),
-        score: RecommendationScore::Bytes(night),
+        score: RecommendationScore::Bytes {value: night},
         reasons: base_reasons(
             package,
             RecommendationReason::BestNightTraffic,

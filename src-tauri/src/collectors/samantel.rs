@@ -84,6 +84,7 @@ impl Collector for SamantelCollector {
             .collect_raw()
             .map_err(|e| CollectorError::Failed(e.to_string()))?;
         let raw_record_count = catalog.packages.len();
+        println!("Samantel products collected: {raw_record_count}");
         let mut packages = Vec::new();
         let mut normalization_failures = 0;
         for raw in catalog.packages {
@@ -122,28 +123,28 @@ pub struct SamantelExtraction {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RawSamantelPackage {
-    #[serde(alias = "OfferID")]
+    #[serde(rename = "OfferID")]
     pub id: Option<String>,
-    #[serde(alias = "OfferName")]
+    #[serde(rename = "OfferName")]
     pub offer_name: Option<String>,
     pub price: Option<Value>,
-    #[serde(alias = "daydata")]
+    #[serde(rename = "daydata")]
     pub day_data: Option<Value>,
-    #[serde(alias = "nightdata")]
+    #[serde(rename = "nightdata")]
     pub night_data: Option<Value>,
-    #[serde(alias = "totaldata")]
+    #[serde(rename = "totaldata")]
     pub total_data: Option<Value>,
-    #[serde(alias = "expire")]
+    #[serde(rename = "expire")]
     pub validity: Option<Value>,
-    #[serde(alias = "OnVoice")]
+    #[serde(rename = "OnVoice")]
     pub on_voice: Option<Value>,
-    #[serde(alias = "OffVoice")]
+    #[serde(rename = "OffVoice")]
     pub off_voice: Option<Value>,
-    #[serde(alias = "OnSMS")]
+    #[serde(rename = "OnSMS")]
     pub on_sms: Option<Value>,
-    #[serde(alias = "OffSMS")]
+    #[serde(rename = "OffSMS")]
     pub off_sms: Option<Value>,
-    #[serde(alias = "type")]
+    #[serde(rename = "type")]
     pub package_type: Option<String>,
     #[serde(flatten)]
     pub metadata: Map<String, Value>,

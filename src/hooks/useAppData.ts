@@ -35,20 +35,39 @@ export function useAppData() {
   const load = useCallback(async () => {
     setLoading(true);
     setError(false);
-    try {
-      const [p, r, s] = await Promise.all([
-        getPackages(),
-        getRecommendations(recommendationContext()),
-        getCacheStatus(),
-      ]);
-      setPackages(p);
-      setRecommendations(r);
-      setStatus(s);
-    } catch {
-      setError(true);
-    } finally {
-      setLoading(false);
+
+    const results = await Promise.allSettled([
+      getPackages(),
+      getRecommendations(recommendationContext()),
+      getCacheStatus(),
+    ]);
+
+    const [packagesResult, recommendationsResult, statusResult] = results;
+
+    if (packagesResult.status === "fulfilled") {
+      setPackages(packagesResult.value);
+    } else {
+      console.error("packages loading failed:", packagesResult.reason);
     }
+
+    if (recommendationsResult.status === "fulfilled") {
+      setRecommendations(recommendationsResult.value);
+    } else {
+      console.error(
+          "recommendations loading failed:",
+          recommendationsResult.reason,
+      );
+    }
+
+    if (statusResult.status === "fulfilled") {
+      setStatus(statusResult.value);
+    } else {
+      console.error("cache status loading failed:", statusResult.reason);
+    }
+
+    setError(packagesResult.status === "rejected");
+
+    setLoading(false);
   }, []);
   const runQuery = useCallback(async (next: PackageQuery) => {
     setQuery(next);

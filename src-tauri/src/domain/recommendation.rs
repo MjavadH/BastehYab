@@ -71,9 +71,19 @@ pub enum RecommendationScore {
     FreeGeneralData,
     UnlimitedGeneralData,
     UnlimitedNightData,
-    Ratio { numerator: u128, denominator: u128 },
-    Bytes(u64),
-    Price(u64),
+
+    Ratio {
+        numerator: u128,
+        denominator: u128,
+    },
+
+    Bytes {
+        value: u64,
+    },
+
+    Price {
+        value: u64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
