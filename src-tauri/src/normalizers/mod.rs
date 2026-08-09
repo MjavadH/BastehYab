@@ -146,8 +146,6 @@ pub fn time_window(start: LocalTime, end: LocalTime) -> TimeWindow {
     TimeWindow { start, end }
 }
 
-/// Extracts simple textual local-time windows such as `2 شب تا 6 صبح`,
-/// `6 صبح تا 12`, or `02:00-07:00` without evaluating remote content.
 pub fn time_window_from_text(text: &str) -> Result<Option<TimeWindow>, NormalizationError> {
     let normalized = normalize_digits(text).to_lowercase();
     let Some((left, right)) = split_time_range(&normalized) else {

@@ -14,7 +14,8 @@ use crate::{
         },
     },
     normalizers::{
-        canonical_package_id, clean_text, data_bytes, money_from_toman, normalize_digits,
+        canonical_package_id, clean_text, data_bytes, is_night_time_window,
+        mentions_time_restriction, money_from_toman, normalize_digits, time_window_from_text,
         validate_package, DataUnit, NormalizationError,
     },
 };
@@ -51,15 +52,54 @@ impl IrancellNormalizer {
         .ok_or(IrancellNormalizationError::MissingId)?;
         let traffic_mb = parse_traffic_mb(raw)?;
         let validity = parse_validity(raw);
-        let name = generate_name(traffic_mb, validity);
+
+        let original_name = localized_text(raw.name.as_ref());
+        let mut name = generate_name(traffic_mb, validity);
+
         let price = raw.price.as_ref().map(parse_price).transpose()?;
         let sim_types = parse_sim_types(raw);
-        let mut general = DataAllowance::finite(
-            DataAllowanceKind::General,
+
+        let mut allowance_kind = DataAllowanceKind::General;
+        let mut time_window = None;
+        let mut package_kind = PackageKind::InternetOnly;
+
+        if let Some(ref text) = original_name {
+            if text.contains("مکالمه") || text.contains("پیامک") {
+                package_kind = PackageKind::Combined;
+            }
+
+            let mut text_for_time = normalize_digits(text);
+            for i in 0..10 {
+                text_for_time = text_for_time.replace(&format!("{i}تا"), &format!("{i} تا "));
+            }
+
+            if let Ok(Some(tw)) = time_window_from_text(&text_for_time) {
+                time_window = Some(tw);
+                if is_night_time_window(tw) {
+                    allowance_kind = DataAllowanceKind::Night;
+                }
+
+                let period = if tw.end.hour <= 12 { "صبح" } else { "شب" };
+                name.push_str(&format!(" ({} تا {} {})", tw.start.hour, tw.end.hour, period));
+
+            } else if mentions_time_restriction(text) {
+                if text.contains("شبانه") || text.contains("صبح") || text.contains("بامداد") {
+                    allowance_kind = DataAllowanceKind::Night;
+                    name.push_str(" (شبانه)");
+                } else {
+                    name.push_str(" (زمان‌دار)");
+                }
+            }
+        }
+
+        let mut allowance = DataAllowance::finite(
+            allowance_kind,
             data_bytes(traffic_mb, DataUnit::Mib)
                 .map_err(|_| IrancellNormalizationError::InvalidVolume)?,
         );
-        general.description = Some(format_traffic(traffic_mb));
+        allowance.description = Some(format_traffic(traffic_mb));
+        allowance.time_window = time_window;
+
         let package = InternetPackage {
             id: canonical_package_id(Operator::Irancell, &external_id),
             operator: Operator::Irancell,
@@ -67,11 +107,11 @@ impl IrancellNormalizer {
             name,
             price,
             validity,
-            data_allowances: vec![general],
+            data_allowances: vec![allowance],
             voice: None,
             sms: None,
             sim_types,
-            package_kind: PackageKind::InternetOnly,
+            package_kind,
             availability: Availability::Unknown,
             purchase: PurchaseInfo {
                 official_url: Some(irancell_page_url().into()),
@@ -82,7 +122,7 @@ impl IrancellNormalizer {
                 source_url: Some(IRANCELL_PRODUCTS_URL.into()),
                 regulatory_code: None,
                 offer_code: joined_offer_codes(raw),
-                original_description: localized_text(raw.name.as_ref()),
+                original_description: original_name,
             },
         };
         validate_package(&package)?;
