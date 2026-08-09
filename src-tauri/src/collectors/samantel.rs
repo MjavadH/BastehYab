@@ -1,4 +1,7 @@
-use std::{process::Command, time::Duration};
+use std::{
+    process::Command,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -12,27 +15,33 @@ use crate::{
 };
 
 const SAMANTEL_PACKAGE_URL: &str = "https://payment.samantel.ir/package";
+const SAMANTEL_API_URL: &str = "https://payment.samantel.ir/api/mediator/samantel/";
 const MAX_RESPONSE_BYTES: u64 = 2 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct SamantelCollector {
-    source_url: String,
+    api_url: String,
     timeout: Duration,
 }
+
 impl Default for SamantelCollector {
     fn default() -> Self {
         Self {
-            source_url: SAMANTEL_PACKAGE_URL.into(),
+            api_url: SAMANTEL_API_URL.into(),
             timeout: Duration::from_secs(20),
         }
     }
 }
+
 impl SamantelCollector {
     pub fn new() -> Self {
         Self::default()
     }
+
     pub fn collect_raw(&self) -> Result<SamantelCatalog, SamantelCollectorError> {
         let timeout = self.timeout.as_secs().max(1).to_string();
+        let mobile = generated_catalog_mobile();
+        let body = format!("method=getpackagelist&mobile={mobile}");
         let output = Command::new("curl")
             .args([
                 "--fail",
@@ -42,10 +51,14 @@ impl SamantelCollector {
                 "--max-time",
                 &timeout,
                 "--header",
-                "Accept: text/html,application/xhtml+xml",
+                "Accept: application/json",
+                "--header",
+                "Content-Type: application/x-www-form-urlencoded",
                 "--user-agent",
                 "BastehYab/0.1 (+https://github.com/MjavadH/BastehYab)",
-                &self.source_url,
+                "--data",
+                &body,
+                &self.api_url,
             ])
             .output()
             .map_err(|e| SamantelCollectorError::Request(e.to_string()))?;
@@ -54,9 +67,10 @@ impl SamantelCollector {
                 output.status.code().unwrap_or_default() as u16,
             ));
         }
-        parse_document(&output.stdout, &self.source_url)
+        parse_catalog(&output.stdout, &self.api_url)
     }
 }
+
 impl Collector for SamantelCollector {
     fn collect(&self, operator: Operator) -> Result<CollectedPackages, CollectorError> {
         if operator != Operator::Samantel {
@@ -91,9 +105,11 @@ impl Collector for SamantelCollector {
 #[serde(rename_all = "camelCase")]
 pub struct SamantelCatalog {
     pub source_url: String,
+    pub api_url: String,
     pub packages: Vec<RawSamantelPackage>,
     pub extraction: SamantelExtraction,
 }
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SamantelExtraction {
@@ -102,18 +118,35 @@ pub struct SamantelExtraction {
     pub accepted_count: usize,
     pub rejected_count: usize,
 }
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RawSamantelPackage {
+    #[serde(alias = "OfferID")]
     pub id: Option<String>,
-    pub name: Option<String>,
+    #[serde(alias = "OfferName")]
+    pub offer_name: Option<String>,
     pub price: Option<Value>,
-    pub volume: Option<Value>,
+    #[serde(alias = "daydata")]
+    pub day_data: Option<Value>,
+    #[serde(alias = "nightdata")]
+    pub night_data: Option<Value>,
+    #[serde(alias = "totaldata")]
+    pub total_data: Option<Value>,
+    #[serde(alias = "expire")]
     pub validity: Option<Value>,
-    pub category: Option<String>,
-    pub benefits: Vec<Value>,
-    pub purchase_url: Option<String>,
-    pub unknown_fields: Map<String, Value>,
+    #[serde(alias = "OnVoice")]
+    pub on_voice: Option<Value>,
+    #[serde(alias = "OffVoice")]
+    pub off_voice: Option<Value>,
+    #[serde(alias = "OnSMS")]
+    pub on_sms: Option<Value>,
+    #[serde(alias = "OffSMS")]
+    pub off_sms: Option<Value>,
+    #[serde(alias = "type")]
+    pub package_type: Option<String>,
+    #[serde(flatten)]
+    pub metadata: Map<String, Value>,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -124,53 +157,48 @@ pub enum SamantelCollectorError {
     Status(u16),
     #[error("Samantel response is too large: {0} bytes")]
     TooLarge(u64),
-    #[error("Samantel response is not valid UTF-8")]
-    Utf8,
-    #[error("Samantel objectData was not found")]
-    MissingObjectData,
-    #[error("Samantel objectData is malformed JSON: {0}")]
+    #[error("Samantel response is malformed JSON: {0}")]
     Json(String),
-    #[error("Samantel response contained no package-like records")]
+    #[error("Samantel response contained no package list")]
+    MissingPackageList,
+    #[error("Samantel response contained no internet package records")]
     NoPackages,
-    #[error("Samantel parser confidence is too low: {accepted}/{candidates} candidates accepted")]
-    LowConfidence { accepted: usize, candidates: usize },
 }
 
 pub fn samantel_package_url() -> &'static str {
     SAMANTEL_PACKAGE_URL
 }
+pub fn samantel_api_url() -> &'static str {
+    SAMANTEL_API_URL
+}
 
-pub fn parse_document(
+pub fn parse_catalog(
     bytes: &[u8],
-    source_url: &str,
+    api_url: &str,
 ) -> Result<SamantelCatalog, SamantelCollectorError> {
     if bytes.len() as u64 > MAX_RESPONSE_BYTES {
         return Err(SamantelCollectorError::TooLarge(bytes.len() as u64));
     }
-    let html = std::str::from_utf8(bytes).map_err(|_| SamantelCollectorError::Utf8)?;
-    let object = extract_object_data(html).ok_or(SamantelCollectorError::MissingObjectData)?;
     let root: Value =
-        serde_json::from_str(&object).map_err(|e| SamantelCollectorError::Json(e.to_string()))?;
-    let mut candidates = Vec::new();
-    collect_candidate_objects(&root, &mut candidates);
-    let candidate_count = candidates.len();
-    let packages: Vec<_> = candidates
-        .into_iter()
-        .filter_map(|m| raw_from_map(&m))
+        serde_json::from_slice(bytes).map_err(|e| SamantelCollectorError::Json(e.to_string()))?;
+    let result = root
+        .get("result")
+        .and_then(Value::as_array)
+        .ok_or(SamantelCollectorError::MissingPackageList)?;
+    let candidate_count = result.len();
+    let packages: Vec<_> = result
+        .iter()
+        .filter_map(|v| serde_json::from_value::<RawSamantelPackage>(v.clone()).ok())
+        .filter(has_positive_internet_quota)
         .collect();
     if packages.is_empty() {
         return Err(SamantelCollectorError::NoPackages);
     }
-    if packages.len() * 2 < candidate_count {
-        return Err(SamantelCollectorError::LowConfidence {
-            accepted: packages.len(),
-            candidates: candidate_count,
-        });
-    }
     Ok(SamantelCatalog {
-        source_url: source_url.into(),
+        source_url: SAMANTEL_PACKAGE_URL.into(),
+        api_url: api_url.into(),
         extraction: SamantelExtraction {
-            strategy: "embedded_object_data".into(),
+            strategy: "mediator_getpackagelist".into(),
             candidate_count,
             accepted_count: packages.len(),
             rejected_count: candidate_count - packages.len(),
@@ -179,163 +207,94 @@ pub fn parse_document(
     })
 }
 
-fn extract_object_data(html: &str) -> Option<String> {
-    let idx = html.find("objectData")?;
-    let after = &html[idx + "objectData".len()..];
-    let eq = after.find('=')?;
-    let s = after[eq + 1..].trim_start();
-    let open = s.find(|c| c == '[' || c == '{')?;
-    let s = &s[open..];
-    let mut depth = 0i32;
-    let mut in_str = false;
-    let mut esc = false;
-    for (i, ch) in s.char_indices() {
-        if in_str {
-            if esc {
-                esc = false;
-            } else if ch == '\\' {
-                esc = true;
-            } else if ch == '\"' {
-                in_str = false;
-            }
-            continue;
-        }
-        match ch {
-            '"' => in_str = true,
-            '[' | '{' => depth += 1,
-            ']' | '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(s[..=i].to_string());
-                }
-            }
-            _ => {}
+fn generated_catalog_mobile() -> String {
+    let suffix = 30 + random_mod_31();
+    format!("099993182{suffix:02}")
+}
+
+fn random_mod_31() -> u32 {
+    let mut buf = [0_u8; 8];
+    if let Ok(mut file) = std::fs::File::open("/dev/urandom") {
+        use std::io::Read;
+        if file.read_exact(&mut buf).is_ok() {
+            return (u64::from_ne_bytes(buf) % 31) as u32;
         }
     }
-    None
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() % 31)
+        .unwrap_or(0)
 }
-fn collect_candidate_objects(v: &Value, out: &mut Vec<Map<String, Value>>) {
-    match v {
-        Value::Array(a) => a.iter().for_each(|x| collect_candidate_objects(x, out)),
-        Value::Object(m) => {
-            if has_any(
-                m,
-                &[
-                    "id",
-                    "packageId",
-                    "code",
-                    "name",
-                    "title",
-                    "price",
-                    "amount",
-                    "volume",
-                    "internet",
-                    "duration",
-                    "validity",
-                ],
-            ) {
-                out.push(m.clone());
-            }
-            for x in m.values() {
-                collect_candidate_objects(x, out);
-            }
-        }
-        _ => {}
-    }
+
+fn has_positive_internet_quota(raw: &RawSamantelPackage) -> bool {
+    positive_decimal(&raw.day_data)
+        || positive_decimal(&raw.night_data)
+        || positive_decimal(&raw.total_data)
 }
-fn raw_from_map(map: &Map<String, Value>) -> Option<RawSamantelPackage> {
-    let mut unknown = map.clone();
-    let id = take_string(&mut unknown, &["id", "packageId", "code", "offerCode"]);
-    let name = take_string(&mut unknown, &["name", "title", "packageName", "caption"]);
-    let price = take_value(&mut unknown, &["price", "amount", "cost", "fee"]);
-    let volume = take_value(&mut unknown, &["volume", "internet", "data", "traffic"]);
-    let validity = take_value(&mut unknown, &["validity", "duration", "period"]);
-    if id.is_none() || name.is_none() || (price.is_none() && volume.is_none() && validity.is_none())
-    {
-        return None;
-    }
-    let category = take_string(
-        &mut unknown,
-        &["category", "type", "simType", "packageType"],
-    );
-    let purchase_url = take_string(&mut unknown, &["purchaseUrl", "buyUrl", "url"]);
-    let benefits = take_array(
-        &mut unknown,
-        &["benefits", "gift", "gifts", "details", "items"],
-    );
-    Some(RawSamantelPackage {
-        id,
-        name,
-        price,
-        volume,
-        validity,
-        category,
-        benefits,
-        purchase_url,
-        unknown_fields: unknown,
-    })
+
+fn positive_decimal(value: &Option<Value>) -> bool {
+    value
+        .as_ref()
+        .and_then(value_to_f64)
+        .is_some_and(|n| n > 0.0)
 }
-fn has_any(m: &Map<String, Value>, keys: &[&str]) -> bool {
-    keys.iter().any(|k| m.contains_key(*k))
-}
-fn take_value(m: &mut Map<String, Value>, keys: &[&str]) -> Option<Value> {
-    for k in keys {
-        if let Some(v) = m.remove(*k) {
-            return Some(v);
-        }
-    }
-    None
-}
-fn take_string(m: &mut Map<String, Value>, keys: &[&str]) -> Option<String> {
-    take_value(m, keys).and_then(|v| match v {
-        Value::String(s) => Some(s),
-        Value::Number(n) => Some(n.to_string()),
+
+fn value_to_f64(value: &Value) -> Option<f64> {
+    match value {
+        Value::Number(n) => n.as_f64(),
+        Value::String(s) => s.trim().parse::<f64>().ok(),
         _ => None,
-    })
-}
-fn take_array(m: &mut Map<String, Value>, keys: &[&str]) -> Vec<Value> {
-    match take_value(m, keys) {
-        Some(Value::Array(a)) => a,
-        Some(v) => vec![v],
-        None => vec![],
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    const NORMAL: &[u8] = include_bytes!("../../tests/fixtures/samantel/normal_object_data.html");
-    const EMPTY: &[u8] = include_bytes!("../../tests/fixtures/samantel/empty_object_data.html");
-    const CHANGED: &[u8] = include_bytes!("../../tests/fixtures/samantel/changed_markup.html");
+    use serde_json::json;
+
+    fn fixture() -> Vec<u8> {
+        json!({"result":[
+            {"OfferID":"350","OfferName":"1 روزه،1 گیگابایت","price":126500,"priceNoTax":115000,"daydata":1,"nightdata":0,"totaldata":1,"expire":"(کد 533685)1","OnVoice":0,"OffVoice":0,"OnSMS":0,"OffSMS":0,"type":"DATA","extra":"kept"},
+            {"OfferID":"351","OfferName":"100 دقیقه مکالمه","price":1000,"daydata":0,"nightdata":0,"totaldata":0,"expire":"1","OnVoice":100,"OffVoice":0,"OnSMS":0,"OffSMS":0,"type":"VOICE"},
+            {"OfferID":"352","OfferName":"شبانه 7 روزه،0.3 گیگابایت","price":2000,"daydata":0,"nightdata":0.3,"totaldata":0.3,"expire":"7","OnVoice":0,"OffVoice":0,"OnSMS":0,"OffSMS":0,"type":"NIGHT"}
+        ]}).to_string().into_bytes()
+    }
+
     #[test]
-    fn parses_normal_object_data() {
-        let c = parse_document(NORMAL, SAMANTEL_PACKAGE_URL).unwrap();
-        assert_eq!(c.packages.len(), 2);
-        assert_eq!(c.extraction.strategy, "embedded_object_data");
+    fn parses_api_result_and_filters_voice_only() {
+        let catalog = parse_catalog(&fixture(), SAMANTEL_API_URL).unwrap();
+        assert_eq!(catalog.extraction.candidate_count, 3);
+        assert_eq!(catalog.extraction.accepted_count, 2);
+        assert_eq!(catalog.packages[0].id.as_deref(), Some("350"));
         assert_eq!(
-            c.packages[0].name.as_deref(),
-            Some("بسته اینترنت 10 گیگابایت 30 روزه")
+            catalog.packages[0].offer_name.as_deref(),
+            Some("1 روزه،1 گیگابایت")
+        );
+        assert_eq!(
+            catalog.packages[0].metadata.get("priceNoTax"),
+            Some(&json!(115000))
+        );
+        assert_eq!(
+            catalog.packages[0].metadata.get("extra"),
+            Some(&json!("kept"))
         );
     }
+
     #[test]
-    fn missing_sections_fail_safely() {
+    fn rejects_missing_result() {
         assert!(matches!(
-            parse_document(b"<html></html>", SAMANTEL_PACKAGE_URL),
-            Err(SamantelCollectorError::MissingObjectData)
+            parse_catalog(br#"{}"#, SAMANTEL_API_URL),
+            Err(SamantelCollectorError::MissingPackageList)
         ));
     }
+
     #[test]
-    fn changed_markup_is_rejected_by_confidence() {
-        assert!(matches!(
-            parse_document(CHANGED, SAMANTEL_PACKAGE_URL),
-            Err(SamantelCollectorError::LowConfidence { .. })
-        ));
-    }
-    #[test]
-    fn empty_extraction_is_rejected() {
-        assert!(matches!(
-            parse_document(EMPTY, SAMANTEL_PACKAGE_URL),
-            Err(SamantelCollectorError::NoPackages)
-        ));
+    fn generated_mobile_uses_public_catalog_range() {
+        for _ in 0..100 {
+            let mobile = generated_catalog_mobile();
+            let suffix: u32 = mobile[9..].parse().unwrap();
+            assert!(mobile.starts_with("099993182"));
+            assert!((30..=60).contains(&suffix));
+        }
     }
 }

@@ -19,6 +19,7 @@ use crate::{
 
 #[derive(Debug, Clone, Copy)]
 pub struct SamantelNormalizer;
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum SamantelNormalizationError {
     #[error("missing or invalid Samantel package id")]
@@ -29,6 +30,8 @@ pub enum SamantelNormalizationError {
     InvalidPrice,
     #[error("invalid Samantel data volume")]
     InvalidVolume,
+    #[error("Samantel package does not contain internet quota")]
+    NoInternetQuota,
     #[error("canonical package validation failed: {0}")]
     Validation(#[from] NormalizationError),
 }
@@ -45,59 +48,31 @@ impl SamantelNormalizer {
         )
         .ok_or(SamantelNormalizationError::MissingId)?;
         let name = clean_text(
-            raw.name
+            raw.offer_name
                 .as_deref()
                 .ok_or(SamantelNormalizationError::EmptyName)?,
         )
         .ok_or(SamantelNormalizationError::EmptyName)?;
-        let price = raw.price.as_ref().map(parse_price).transpose()?;
-        let mut data_allowances = Vec::new();
-        if let Some(v) = &raw.volume {
-            data_allowances.push(parse_allowance_value(v, DataAllowanceKind::General)?);
-        }
-        for b in &raw.benefits {
-            if let Some(a) = parse_benefit(b) {
-                data_allowances.push(a?);
-            }
-        }
-        if data_allowances.is_empty() && mentions_data(&name) {
-            data_allowances.push(parse_allowance_text(&name, DataAllowanceKind::General)?);
-        }
-        if data_allowances.is_empty() {
-            data_allowances.push(DataAllowance::unknown(DataAllowanceKind::Other));
-        }
-        let validity = raw
-            .validity
-            .as_ref()
-            .map(parse_validity)
-            .unwrap_or_else(|| parse_validity_text(&name));
-        let package_kind = if raw
-            .benefits
-            .iter()
-            .any(|b| !mentions_data(&value_to_text(b).unwrap_or_default()))
-        {
-            PackageKind::Combined
-        } else {
-            PackageKind::InternetOnly
-        };
+        let package_type = raw.package_type.as_deref().unwrap_or_default();
+        let voice = parse_voice(&raw.on_voice, &raw.off_voice);
+        let sms = parse_sms(&raw.on_sms, &raw.off_sms);
+        let data_allowances = parse_data_allowances(raw, package_type)?;
+        let package_kind = classify_package_kind(package_type, voice.as_ref(), sms.as_ref());
         let package = InternetPackage {
             id: canonical_package_id(Operator::Samantel, &external_id),
             operator: Operator::Samantel,
             external_id,
             name: name.clone(),
-            price,
-            validity,
+            price: raw.price.as_ref().map(parse_price).transpose()?,
+            validity: parse_validity(raw, &name),
             data_allowances,
-            voice: parse_voice(&raw.benefits),
-            sms: parse_sms(&raw.benefits),
-            sim_types: parse_sim_types(raw.category.as_deref()),
+            voice,
+            sms,
+            sim_types: vec![SimType::Other],
             package_kind,
             availability: Availability::Unknown,
             purchase: PurchaseInfo {
-                official_url: raw
-                    .purchase_url
-                    .clone()
-                    .or_else(|| Some(samantel_package_url().into())),
+                official_url: Some(samantel_package_url().into()),
                 ussd_code: None,
             },
             metadata: PackageMetadata {
@@ -112,178 +87,326 @@ impl SamantelNormalizer {
         Ok(package)
     }
 }
+
 fn parse_price(v: &Value) -> Result<crate::domain::money::Money, SamantelNormalizationError> {
-    let raw = value_to_text(v).ok_or(SamantelNormalizationError::InvalidPrice)?;
-    let t = normalize_digits(&raw).replace([',', '٬'], "");
-    let digits: String = t.chars().filter(|c| c.is_ascii_digit()).collect();
-    let amount: u64 = digits
+    let text = value_to_text(v).ok_or(SamantelNormalizationError::InvalidPrice)?;
+    let normalized = normalize_digits(&text);
+    let digits: String = normalized.chars().filter(|c| c.is_ascii_digit()).collect();
+    let toman: u64 = digits
         .parse()
         .map_err(|_| SamantelNormalizationError::InvalidPrice)?;
-    money_from_toman(amount).map_err(|_| SamantelNormalizationError::InvalidPrice)
+    money_from_toman(toman).map_err(|_| SamantelNormalizationError::InvalidPrice)
 }
-fn parse_allowance_value(
-    v: &Value,
+
+fn parse_data_allowances(
+    raw: &RawSamantelPackage,
+    package_type: &str,
+) -> Result<Vec<DataAllowance>, SamantelNormalizationError> {
+    let day = positive_decimal_text(&raw.day_data);
+    let night = positive_decimal_text(&raw.night_data);
+    let total = positive_decimal_text(&raw.total_data);
+    let mut allowances = Vec::new();
+    if let Some(day) = day {
+        allowances.push(data_allowance(
+            data_kind_for_package_type(package_type, false),
+            &day,
+        )?);
+    } else if night.is_none() {
+        if let Some(total) = total {
+            allowances.push(data_allowance(
+                data_kind_for_package_type(package_type, false),
+                &total,
+            )?);
+        }
+    }
+    if let Some(night) = night {
+        allowances.push(data_allowance(DataAllowanceKind::Night, &night)?);
+    }
+    if allowances.is_empty() {
+        return Err(SamantelNormalizationError::NoInternetQuota);
+    }
+    Ok(allowances)
+}
+
+fn data_allowance(
     kind: DataAllowanceKind,
+    gb: &str,
 ) -> Result<DataAllowance, SamantelNormalizationError> {
-    let text = value_to_text(v).ok_or(SamantelNormalizationError::InvalidVolume)?;
-    parse_allowance_text(&text, kind)
+    decimal_data_bytes(gb, DataUnit::Gib)
+        .map(|bytes| DataAllowance::finite(kind, bytes))
+        .map_err(|_| SamantelNormalizationError::InvalidVolume)
 }
-fn parse_benefit(v: &Value) -> Option<Result<DataAllowance, SamantelNormalizationError>> {
-    let text = value_to_text(v)?;
-    mentions_data(&text).then(|| parse_allowance_text(&text, classify_allowance(&text)))
+
+fn parse_voice(on: &Option<Value>, off: &Option<Value>) -> Option<VoiceAllowance> {
+    let minutes = positive_u32(on)
+        .unwrap_or(0)
+        .saturating_add(positive_u32(off).unwrap_or(0));
+    (minutes > 0).then_some(VoiceAllowance {
+        minutes: Some(minutes),
+        unlimited: false,
+    })
 }
-fn parse_allowance_text(
-    text: &str,
-    kind: DataAllowanceKind,
-) -> Result<DataAllowance, SamantelNormalizationError> {
-    let t = normalize_digits(text).to_lowercase();
-    if t.contains("نامحدود") || t.contains("unlimited") {
-        let mut a = DataAllowance::unlimited(kind);
-        a.description = clean_text(text);
-        return Ok(a);
-    }
-    let unit = if t.contains("گیگ") || t.contains("gb") {
-        DataUnit::Gib
-    } else if t.contains("مگ") || t.contains("mb") {
-        DataUnit::Mib
+
+fn parse_sms(on: &Option<Value>, off: &Option<Value>) -> Option<SmsAllowance> {
+    let count = positive_u32(on)
+        .unwrap_or(0)
+        .saturating_add(positive_u32(off).unwrap_or(0));
+    (count > 0).then_some(SmsAllowance {
+        count: Some(count),
+        unlimited: false,
+    })
+}
+
+fn classify_package_kind(
+    package_type: &str,
+    voice: Option<&VoiceAllowance>,
+    sms: Option<&SmsAllowance>,
+) -> PackageKind {
+    if voice.is_some() || sms.is_some() || package_type.eq_ignore_ascii_case("VOICE") {
+        PackageKind::Combined
     } else {
-        return Ok(unknown_with_description(kind, text));
-    };
-    let n = first_number(&t).ok_or(SamantelNormalizationError::InvalidVolume)?;
-    let mut a = DataAllowance::finite(
-        kind,
-        decimal_data_bytes(&n, unit).map_err(|_| SamantelNormalizationError::InvalidVolume)?,
-    );
-    a.description = clean_text(text);
-    Ok(a)
-}
-fn parse_validity(v: &Value) -> Validity {
-    value_to_text(v).map_or(Validity::Unknown, |s| parse_validity_text(&s))
-}
-fn parse_validity_text(text: &str) -> Validity {
-    let t = normalize_digits(text).to_lowercase();
-    let Some(n) = first_number_before_duration(&t).and_then(|n| n.parse::<u32>().ok()) else {
-        return Validity::Unknown;
-    };
-    if t.contains("ساعت") || t.contains("hour") {
-        Validity::Hours(n)
-    } else if t.contains("روز") || t.contains("day") {
-        Validity::Days(n)
-    } else {
-        Validity::Other
+        PackageKind::InternetOnly
     }
 }
-fn parse_sim_types(c: Option<&str>) -> Vec<SimType> {
-    let Some(c) = c else {
-        return vec![SimType::Other];
-    };
-    let c = c.to_lowercase();
-    let mut s = Vec::new();
-    if c.contains("اعتباری") || c.contains("pre") {
-        s.push(SimType::Prepaid)
-    }
-    if c.contains("دائمی") || c.contains("post") {
-        s.push(SimType::Postpaid)
-    }
-    if s.is_empty() {
-        s.push(SimType::Other)
-    }
-    s
-}
-fn parse_voice(bs: &[Value]) -> Option<VoiceAllowance> {
-    bs.iter()
-        .filter_map(value_to_text)
-        .any(|t| t.contains("دقیقه") || t.to_lowercase().contains("voice"))
-        .then_some(VoiceAllowance {
-            minutes: None,
-            unlimited: false,
-        })
-}
-fn parse_sms(bs: &[Value]) -> Option<SmsAllowance> {
-    bs.iter()
-        .filter_map(value_to_text)
-        .any(|t| t.contains("پیامک") || t.to_lowercase().contains("sms"))
-        .then_some(SmsAllowance {
-            count: None,
-            unlimited: false,
-        })
-}
-fn classify_allowance(text: &str) -> DataAllowanceKind {
-    let t = text.to_lowercase();
-    if t.contains("شب") || t.contains("night") {
+
+fn data_kind_for_package_type(package_type: &str, is_night_field: bool) -> DataAllowanceKind {
+    if is_night_field || package_type.eq_ignore_ascii_case("NIGHT") {
         DataAllowanceKind::Night
-    } else if t.contains("داخلی") || t.contains("domestic") {
-        DataAllowanceKind::Domestic
-    } else if t.contains("هدیه") || t.contains("gift") {
-        DataAllowanceKind::Gift
+    } else if package_type.eq_ignore_ascii_case("ROAMING") {
+        DataAllowanceKind::International
+    } else if package_type.eq_ignore_ascii_case("DATA")
+        || package_type.eq_ignore_ascii_case("SPECIAL")
+    {
+        DataAllowanceKind::General
     } else {
         DataAllowanceKind::Other
     }
 }
-fn mentions_data(text: &str) -> bool {
-    let t = text.to_lowercase();
-    t.contains("اینترنت")
-        || t.contains("گیگ")
-        || t.contains("مگ")
-        || t.contains("gb")
-        || t.contains("mb")
-        || t.contains("نامحدود")
+
+fn parse_validity(raw: &RawSamantelPackage, name: &str) -> Validity {
+    raw.validity
+        .as_ref()
+        .and_then(value_to_text)
+        .and_then(|s| validity_from_text(&s))
+        .or_else(|| validity_from_text(name))
+        .or_else(|| {
+            raw.metadata
+                .values()
+                .filter_map(value_to_text)
+                .find_map(|s| validity_from_text(&s))
+        })
+        .unwrap_or(Validity::Unknown)
 }
-fn unknown_with_description(kind: DataAllowanceKind, text: &str) -> DataAllowance {
-    let mut a = DataAllowance::unknown(kind);
-    a.description = clean_text(text);
-    a
+
+fn validity_from_text(text: &str) -> Option<Validity> {
+    let normalized = normalize_digits(text);
+    let lower = normalized.to_lowercase();
+    if lower.contains("روز") || lower.contains("day") {
+        first_number(&lower)
+            .and_then(|n| n.parse::<u32>().ok())
+            .map(Validity::Days)
+    } else if lower.contains("ساعت") || lower.contains("hour") {
+        first_number(&lower)
+            .and_then(|n| n.parse::<u32>().ok())
+            .map(Validity::Hours)
+    } else {
+        None
+    }
 }
+
+fn positive_decimal_text(v: &Option<Value>) -> Option<String> {
+    let text = v.as_ref().and_then(decimal_text)?;
+    (text.parse::<f64>().ok()? > 0.0).then_some(text)
+}
+
+fn positive_u32(v: &Option<Value>) -> Option<u32> {
+    let text = v.as_ref().and_then(decimal_text)?;
+    text.parse::<f64>()
+        .ok()
+        .map(|n| n as u32)
+        .filter(|n| *n > 0)
+}
+
+fn decimal_text(v: &Value) -> Option<String> {
+    match v {
+        Value::Number(n) => Some(n.to_string()),
+        Value::String(s) => Some(
+            normalize_digits(s)
+                .replace([',', '٬'], ".")
+                .chars()
+                .filter(|c| c.is_ascii_digit() || *c == '.')
+                .collect(),
+        ),
+        _ => None,
+    }
+    .filter(|s| !s.is_empty())
+}
+
 fn value_to_text(v: &Value) -> Option<String> {
     match v {
         Value::String(s) => clean_text(s),
         Value::Number(n) => Some(n.to_string()),
-        Value::Object(m) => m
-            .get("value")
-            .or_else(|| m.get("text"))
-            .or_else(|| m.get("title"))
-            .or_else(|| m.get("name"))
-            .and_then(value_to_text),
         _ => None,
     }
 }
+
 fn first_number(text: &str) -> Option<String> {
     text.split(|c: char| !(c.is_ascii_digit() || c == '.' || c == ','))
         .find(|s| s.chars().any(|c| c.is_ascii_digit()))
-        .map(str::to_string)
-}
-fn first_number_before_duration(text: &str) -> Option<String> {
-    first_number(text)
+        .map(|s| s.replace(',', "."))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::collectors::samantel::parse_document;
-    const NORMAL: &[u8] = include_bytes!("../../tests/fixtures/samantel/normal_object_data.html");
+    use crate::collectors::samantel::parse_catalog;
+    use serde_json::{json, Map};
+
+    fn raw(
+        id: &str,
+        name: &str,
+        package_type: &str,
+        day: Value,
+        night: Value,
+    ) -> RawSamantelPackage {
+        RawSamantelPackage {
+            id: Some(id.into()),
+            offer_name: Some(name.into()),
+            price: Some(json!(126500)),
+            day_data: Some(day.clone()),
+            night_data: Some(night.clone()),
+            total_data: Some(day),
+            validity: Some(json!("(کد 533685)1")),
+            on_voice: Some(json!(0)),
+            off_voice: Some(json!(0)),
+            on_sms: Some(json!(0)),
+            off_sms: Some(json!(0)),
+            package_type: Some(package_type.into()),
+            metadata: Map::new(),
+        }
+    }
+
     #[test]
-    fn normalizes_samantel_fixture() {
-        let c = parse_document(NORMAL, samantel_package_url()).unwrap();
-        let p = SamantelNormalizer::normalize(&c.packages[0], 42).unwrap();
-        assert_eq!(p.operator, Operator::Samantel);
-        assert_eq!(p.price.unwrap().amount, 2_500_000);
-        assert_eq!(p.validity, Validity::Days(30));
+    fn standard_internet_package() {
+        let p = SamantelNormalizer::normalize(
+            &raw("350", "1 روزه،1 گیگابایت", "DATA", json!(1), json!(0)),
+            42,
+        )
+        .unwrap();
+        assert_eq!(p.external_id, "350");
+        assert_eq!(p.price.unwrap().amount, 1_265_000);
+        assert_eq!(p.validity, Validity::Days(1));
         assert_eq!(p.data_allowances[0].kind, DataAllowanceKind::General);
+        assert_eq!(p.data_allowances[0].amount_bytes, Some(1024 * 1024 * 1024));
+    }
+
+    #[test]
+    fn night_package() {
+        let p = SamantelNormalizer::normalize(
+            &raw("351", "7 روزه شبانه", "NIGHT", json!(0), json!(1.5)),
+            42,
+        )
+        .unwrap();
         assert_eq!(
-            p.data_allowances[0].amount_bytes,
-            Some(10 * 1024 * 1024 * 1024)
+            p.data_allowances,
+            vec![DataAllowance::finite(
+                DataAllowanceKind::Night,
+                1_610_612_736
+            )]
         );
     }
+
     #[test]
-    fn combined_benefits_are_preserved() {
-        let c = parse_document(NORMAL, samantel_package_url()).unwrap();
-        let p = SamantelNormalizer::normalize(&c.packages[1], 42).unwrap();
+    fn roaming_package() {
+        let p = SamantelNormalizer::normalize(
+            &raw("352", "30 روزه رومینگ", "ROAMING", json!(2), json!(0)),
+            42,
+        )
+        .unwrap();
+        assert_eq!(p.data_allowances[0].kind, DataAllowanceKind::International);
+    }
+
+    #[test]
+    fn decimal_volume() {
+        let p = SamantelNormalizer::normalize(
+            &raw("353", "1 روزه،0.3 گیگابایت", "DATA", json!(0.3), json!(0)),
+            42,
+        )
+        .unwrap();
+        assert_eq!(p.data_allowances[0].amount_bytes, Some(322_122_547));
+    }
+
+    #[test]
+    fn voice_and_sms_make_combined_package() {
+        let mut r = raw("354", "30 روزه ویژه", "SPECIAL", json!(1), json!(0));
+        r.on_voice = Some(json!(10));
+        r.off_voice = Some(json!(5));
+        r.on_sms = Some(json!(2));
+        let p = SamantelNormalizer::normalize(&r, 42).unwrap();
         assert_eq!(p.package_kind, PackageKind::Combined);
-        assert!(p.voice.is_some());
-        assert!(p.sms.is_some());
-        assert!(p
-            .data_allowances
-            .iter()
-            .any(|a| a.kind == DataAllowanceKind::Night));
+        assert_eq!(p.voice.unwrap().minutes, Some(15));
+        assert_eq!(p.sms.unwrap().count, Some(2));
+    }
+
+    #[test]
+    fn voice_only_package_filtering() {
+        let body = json!({"result":[{"OfferID":"v","OfferName":"voice","price":1,"daydata":0,"nightdata":0,"totaldata":0,"expire":"1 روزه","OnVoice":1,"OffVoice":0,"OnSMS":0,"OffSMS":0,"type":"VOICE"}]}).to_string();
+        assert!(parse_catalog(body.as_bytes(), "api").is_err());
+    }
+
+    #[test]
+    fn validity_extraction() {
+        for (text, expected) in [
+            ("1 روزه", 1),
+            ("7 روزه", 7),
+            ("30 روزه", 30),
+            ("365 روزه", 365),
+        ] {
+            let mut r = raw("x", text, "DATA", json!(1), json!(0));
+            r.validity = None;
+            assert_eq!(
+                SamantelNormalizer::normalize(&r, 42).unwrap().validity,
+                Validity::Days(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn snapshot_validation_compatibility() {
+        let p = SamantelNormalizer::normalize(
+            &raw("355", "30 روزه،1 گیگابایت", "DATA", json!(1), json!(0)),
+            42,
+        )
+        .unwrap();
+        validate_package(&p).unwrap();
+        let snapshot = serde_json::to_value(&p).unwrap();
+        assert_eq!(snapshot["operator"], json!("samantel"));
+        assert_eq!(
+            snapshot["purchase"]["officialUrl"],
+            json!(samantel_package_url())
+        );
+    }
+
+    #[test]
+    fn metadata_preservation() {
+        let body = json!({"result":[{"OfferID":"350","OfferName":"1 روزه،1 گیگابایت","price":126500,"priceNoTax":115000,"daydata":1,"nightdata":0,"totaldata":1,"expire":"1 روزه","OnVoice":0,"OffVoice":0,"OnSMS":0,"OffSMS":0,"type":"DATA","unknown":"preserved"}]}).to_string();
+        let c = parse_catalog(body.as_bytes(), "api").unwrap();
+        assert_eq!(
+            c.packages[0].metadata.get("priceNoTax"),
+            Some(&json!(115000))
+        );
+        assert_eq!(
+            c.packages[0].metadata.get("unknown"),
+            Some(&json!("preserved"))
+        );
+        let p = SamantelNormalizer::normalize(&c.packages[0], 42).unwrap();
+        assert_eq!(
+            p.metadata.source_url.as_deref(),
+            Some(samantel_package_url())
+        );
+        assert_eq!(
+            p.metadata.original_description.as_deref(),
+            Some("1 روزه،1 گیگابایت")
+        );
     }
 }
