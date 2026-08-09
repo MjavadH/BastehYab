@@ -12,7 +12,7 @@ use crate::{
         },
     },
     normalizers::{
-        canonical_package_id, clean_text, decimal_data_bytes, money_from_toman, normalize_digits,
+        canonical_package_id, clean_text, decimal_data_bytes, money_from_irr, normalize_digits,
         validate_package, DataUnit, NormalizationError,
     },
 };
@@ -92,10 +92,10 @@ fn parse_price(v: &Value) -> Result<crate::domain::money::Money, SamantelNormali
     let text = value_to_text(v).ok_or(SamantelNormalizationError::InvalidPrice)?;
     let normalized = normalize_digits(&text);
     let digits: String = normalized.chars().filter(|c| c.is_ascii_digit()).collect();
-    let toman: u64 = digits
+    let amount: u64 = digits
         .parse()
         .map_err(|_| SamantelNormalizationError::InvalidPrice)?;
-    money_from_toman(toman).map_err(|_| SamantelNormalizationError::InvalidPrice)
+    Ok(money_from_irr(amount))
 }
 
 fn parse_data_allowances(
