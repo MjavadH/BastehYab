@@ -9,7 +9,7 @@ use crate::{
         },
     },
     normalizers::{
-        canonical_package_id, clean_text, decimal_data_bytes, money_from_toman, normalize_digits,
+        canonical_package_id, clean_text, decimal_data_bytes, money_from_irr, normalize_digits,
         time_window_from_text, validate_package, DataUnit, NormalizationError,
     },
 };
@@ -115,7 +115,7 @@ fn parse_price(v: &Value) -> Result<crate::domain::money::Money, MCINormalizatio
     let amount: u64 = digits
         .parse()
         .map_err(|_| MCINormalizationError::InvalidPrice)?;
-    money_from_toman(amount).map_err(|_| MCINormalizationError::InvalidPrice)
+    Ok(money_from_irr(amount / 10))
 }
 fn parse_allowance_text(text: &str) -> Result<Vec<DataAllowance>, MCINormalizationError> {
     if text.contains('+') {
