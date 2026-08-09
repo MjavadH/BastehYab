@@ -4,13 +4,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use thiserror::Error;
 
+use crate::domain::package::InternetPackage;
 use crate::{
     cache::now_unix_seconds,
     domain::operator::Operator,
     normalizers::rightel::RightelNormalizer,
     refresh::orchestrator::{CollectedPackages, Collector, CollectorError},
 };
-use crate::domain::package::InternetPackage;
 
 const RIGHTEL_AUTH_URL: &str =
     "https://portal-api.rightel.ir/user-management/api/v1/auth/authenticate";
@@ -105,7 +105,10 @@ impl Collector for RightelCollector {
         for raw in catalog.packages {
             match RightelNormalizer::normalize(&raw, fetched_at) {
                 Ok(package) => {
-                    if let Some(existing) = packages.iter_mut().find(|p| p.name == package.name && p.price == package.price) {
+                    if let Some(existing) = packages
+                        .iter_mut()
+                        .find(|p| p.name == package.name && p.price == package.price)
+                    {
                         for sim in package.sim_types {
                             if !existing.sim_types.contains(&sim) {
                                 existing.sim_types.push(sim);
@@ -243,7 +246,10 @@ fn is_internet_package(item: &Value) -> bool {
                     return true;
                 }
             }
-            if let Some(id) = cat.get("channelCategoryId").and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))) {
+            if let Some(id) = cat.get("channelCategoryId").and_then(|v| {
+                v.as_u64()
+                    .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+            }) {
                 if id == 21 {
                     return true;
                 }
@@ -277,8 +283,16 @@ fn raw_from_map(item: &Value) -> RawRightelPackage {
         }
     }
 
-    let filters = item.get("filters").and_then(Value::as_array).cloned().unwrap_or_default();
-    let channel_categories = item.get("channelCategories").and_then(Value::as_array).cloned().unwrap_or_default();
+    let filters = item
+        .get("filters")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let channel_categories = item
+        .get("channelCategories")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
 
     if let Some(obj) = item.as_object() {
         for (k, v) in obj {
@@ -318,16 +332,16 @@ mod tests {
     use crate::normalizers::rightel::RightelNormalizer;
 
     #[test]
-        fn authentication_failure_rejects_missing_token() {
-            assert!(matches!(
-                parse_auth_token(r#"{"data":{}}"#.as_bytes()),
-                Err(RightelCollectorError::Authentication)
-            ));
-        }
+    fn authentication_failure_rejects_missing_token() {
+        assert!(matches!(
+            parse_auth_token(r#"{"data":{}}"#.as_bytes()),
+            Err(RightelCollectorError::Authentication)
+        ));
+    }
 
-        #[test]
-        fn package_retrieval_parser_extracts_internet_only() {
-            let json_resp = r#"{
+    #[test]
+    fn package_retrieval_parser_extracts_internet_only() {
+        let json_resp = r#"{
                 "data": [
                     {
                         "purchasablePackage": {
@@ -350,15 +364,15 @@ mod tests {
                 ]
             }"#;
 
-            let c = parse_catalog(json_resp.as_bytes(), "fixture").unwrap();
-            assert_eq!(c.packages.len(), 1);
-            assert_eq!(c.packages[0].purchasable_package_id.as_deref(), Some("123"));
-            assert_eq!(c.packages[0].offer_code.as_deref(), Some("OFF1"));
-        }
+        let c = parse_catalog(json_resp.as_bytes(), "fixture").unwrap();
+        assert_eq!(c.packages.len(), 1);
+        assert_eq!(c.packages[0].purchasable_package_id.as_deref(), Some("123"));
+        assert_eq!(c.packages[0].offer_code.as_deref(), Some("OFF1"));
+    }
 
-        #[test]
-        fn cache_candidate_generation_for_rightel() {
-            let json_resp = r#"{
+    #[test]
+    fn cache_candidate_generation_for_rightel() {
+        let json_resp = r#"{
                 "data": [
                     {
                         "purchasablePackage": {
@@ -371,14 +385,14 @@ mod tests {
                     }
                 ]
             }"#;
-            let c = parse_catalog(json_resp.as_bytes(), "fixture").unwrap();
-            let p = RightelNormalizer::normalize(&c.packages[0], 10).unwrap();
-            let s = OperatorSnapshot {
-                operator: Operator::Rightel,
-                fetched_at_unix_seconds: 10,
-                stored_at_unix_seconds: 10,
-                packages: vec![p],
-            };
-            validate_snapshot(&s).unwrap();
-        }
+        let c = parse_catalog(json_resp.as_bytes(), "fixture").unwrap();
+        let p = RightelNormalizer::normalize(&c.packages[0], 10).unwrap();
+        let s = OperatorSnapshot {
+            operator: Operator::Rightel,
+            fetched_at_unix_seconds: 10,
+            stored_at_unix_seconds: 10,
+            packages: vec![p],
+        };
+        validate_snapshot(&s).unwrap();
     }
+}

@@ -213,6 +213,9 @@ fn evaluate(package: &InternetPackage, strategy: RecommendationStrategy) -> Opti
 }
 
 fn evaluate_value(package: &InternetPackage) -> Option<Candidate<'_>> {
+    if !has_only_unrestricted_general_data(package) {
+        return None;
+    }
     let price = package.price?.amount;
     let general = finite_data(package, DataAllowanceKind::General)?;
     if general == 0 {
@@ -243,6 +246,9 @@ fn evaluate_value(package: &InternetPackage) -> Option<Candidate<'_>> {
 }
 
 fn evaluate_highest_volume(package: &InternetPackage) -> Option<Candidate<'_>> {
+    if !has_only_unrestricted_general_data(package) {
+        return None;
+    }
     if has_unlimited(package, DataAllowanceKind::General) {
         return Some(Candidate {
             package,
@@ -258,7 +264,7 @@ fn evaluate_highest_volume(package: &InternetPackage) -> Option<Candidate<'_>> {
     (general > 0).then(|| Candidate {
         package,
         metrics: metrics(package),
-        score: RecommendationScore::Bytes {value: general},
+        score: RecommendationScore::Bytes { value: general },
         reasons: base_reasons(
             package,
             RecommendationReason::HighestGeneralData,
@@ -268,6 +274,9 @@ fn evaluate_highest_volume(package: &InternetPackage) -> Option<Candidate<'_>> {
 }
 
 fn evaluate_cheapest(package: &InternetPackage) -> Option<Candidate<'_>> {
+    if !has_only_unrestricted_general_data(package) {
+        return None;
+    }
     let price = package.price?.amount;
     let general = finite_data(package, DataAllowanceKind::General).unwrap_or(0);
     if general == 0 || has_only_restricted_data(package) {
@@ -276,7 +285,7 @@ fn evaluate_cheapest(package: &InternetPackage) -> Option<Candidate<'_>> {
     Some(Candidate {
         package,
         metrics: metrics(package),
-        score: RecommendationScore::Price {value: price},
+        score: RecommendationScore::Price { value: price },
         reasons: base_reasons(
             package,
             RecommendationReason::CheapestUsefulOption,
@@ -301,7 +310,7 @@ fn evaluate_night(package: &InternetPackage) -> Option<Candidate<'_>> {
     (night > 0).then(|| Candidate {
         package,
         metrics: metrics(package),
-        score: RecommendationScore::Bytes {value: night},
+        score: RecommendationScore::Bytes { value: night },
         reasons: base_reasons(
             package,
             RecommendationReason::BestNightTraffic,
@@ -473,8 +482,22 @@ fn has_unlimited(package: &InternetPackage, kind: DataAllowanceKind) -> bool {
 fn has_only_restricted_data(package: &InternetPackage) -> bool {
     !package.data_allowances.iter().any(|a| {
         a.kind == DataAllowanceKind::General
+            && a.time_window.is_none()
             && (a.unlimited || a.amount_bytes.is_some_and(|bytes| bytes > 0))
     })
+}
+
+fn has_only_unrestricted_general_data(package: &InternetPackage) -> bool {
+    let mut has_usable_general = false;
+    for allowance in &package.data_allowances {
+        if allowance.kind != DataAllowanceKind::General || allowance.time_window.is_some() {
+            return false;
+        }
+        if allowance.unlimited || allowance.amount_bytes.is_some_and(|bytes| bytes > 0) {
+            has_usable_general = true;
+        }
+    }
+    has_usable_general
 }
 
 fn price(package: &InternetPackage) -> Option<u64> {

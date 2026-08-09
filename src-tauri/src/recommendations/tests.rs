@@ -120,7 +120,7 @@ fn best_value_ignores_restricted_traffic_and_unknown_price() {
     ];
     let set = recommend(&packages, RecommendationStrategy::BestValue, &ctx(3));
     assert_eq!(set.results[0].package_id, packages[1].id);
-    assert_eq!(set.eligible_count, 2);
+    assert_eq!(set.eligible_count, 1);
 }
 
 #[test]
@@ -231,6 +231,56 @@ fn cheapest_useful_filters_price_and_data() {
     let set = recommend(&packages, RecommendationStrategy::CheapestUseful, &ctx(3));
     assert_eq!(set.eligible_count, 1);
     assert_eq!(set.results[0].package_id, packages[1].id);
+}
+
+#[test]
+fn default_general_recommendations_exclude_mixed_night_roaming_and_time_limited_packages() {
+    let mut timed = general(50);
+    timed.time_window = Some(crate::domain::allowance::TimeWindow {
+        start: crate::domain::allowance::LocalTime { hour: 6, minute: 0 },
+        end: crate::domain::allowance::LocalTime {
+            hour: 12,
+            minute: 0,
+        },
+    });
+    let packages = vec![
+        pkg(
+            "night-mixed",
+            Operator::Mci,
+            Some(10),
+            Some(30),
+            vec![general(10), night(100)],
+        ),
+        pkg(
+            "roaming",
+            Operator::Irancell,
+            Some(1),
+            Some(30),
+            vec![DataAllowance::finite(
+                DataAllowanceKind::International,
+                100 * GB,
+            )],
+        ),
+        pkg("timed", Operator::Rightel, Some(1), Some(30), vec![timed]),
+        pkg(
+            "plain",
+            Operator::Samantel,
+            Some(100),
+            Some(30),
+            vec![general(20)],
+        ),
+    ];
+
+    for strategy in [
+        RecommendationStrategy::BestValue,
+        RecommendationStrategy::HighestVolume,
+        RecommendationStrategy::BestMonthly,
+        RecommendationStrategy::CheapestUseful,
+    ] {
+        let set = recommend(&packages, strategy, &ctx(3));
+        assert_eq!(set.eligible_count, 1, "{strategy:?}");
+        assert_eq!(set.results[0].package_id, packages[3].id, "{strategy:?}");
+    }
 }
 
 #[test]
